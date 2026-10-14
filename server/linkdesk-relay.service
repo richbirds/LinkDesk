@@ -1,0 +1,29 @@
+[Unit]
+Description=LinkDesk device registry and encrypted stream relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=linkdesk
+Group=linkdesk
+EnvironmentFile=/etc/linkdesk/server.env
+ExecStart=/usr/bin/python3 /opt/linkdesk/relay_server.py --port ${LINKDESK_PORT} --cert /etc/linkdesk/server.pem --private-key /etc/linkdesk/server.key --database /var/lib/linkdesk/devices.sqlite3
+Restart=on-failure
+RestartSec=3
+StateDirectory=linkdesk
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/linkdesk
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=512M
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

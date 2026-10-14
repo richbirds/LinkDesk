@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.21)
+if(CMAKE_HOST_APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS version")
+endif()
+project(LinkDesk VERSION 0.6.0 LANGUAGES CXX)
+set(LINKDESK_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
+include(cmake/LinkDesk.cmake)

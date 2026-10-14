@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.21)
+project(LinkDesk VERSION 0.6.0 LANGUAGES CXX)
+if(NOT WIN32)
+    message(FATAL_ERROR "Use ForWin on its matching operating system")
+endif()
+get_filename_component(LINKDESK_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+include("${LINKDESK_ROOT}/cmake/LinkDesk.cmake")

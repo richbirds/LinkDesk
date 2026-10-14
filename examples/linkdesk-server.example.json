@@ -1,0 +1,6 @@
+{
+  "server": "relay.example.com",
+  "port": 443,
+  "fingerprint": "REPLACE_WITH_YOUR_SERVER_CERTIFICATE_SHA256",
+  "enrollmentKey": "REPLACE_WITH_YOUR_PRIVATE_SERVER_KEY"
+}
