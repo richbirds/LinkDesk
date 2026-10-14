@@ -117,6 +117,14 @@ public:
             lastFrame=QDateTime::currentMSecsSinceEpoch(); setState(2,(expanded ? "远程桌面" : "缩略图 · 1 FPS / JPEG 20")+QString(" · ")+endpoint);
             if(openWhenReady) { openWhenReady=false; viewer->begin(name,control); }
         });
+        connect(&client,&RemoteClient::streamMetrics,this,[this](const QJsonObject &metrics){
+            // v0.7.0 hosts suppress unchanged image packets. A live capture loop
+            // with no unacknowledged pictures confirms the last image is current.
+            if(client.active() && !preview->image.isNull() && metrics.contains("pendingFrames") && metrics.value("pendingFrames").toInt(-1)==0) {
+                lastFrame=QDateTime::currentMSecsSinceEpoch();
+                setState(2,(expanded ? "远程桌面" : "缩略图 · 画面静止 / 低带宽")+QString(" · ")+endpoint);
+            }
+        });
         connect(&client,&RemoteClient::error,this,[this](const QString &reason){failure(reason);});
         connect(&client,&RemoteClient::disconnected,this,[this]{
             if(!busy && !channel && !wanted) return;

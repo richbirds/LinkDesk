@@ -10,7 +10,7 @@ int main(int argc,char **argv) {
     QApplication app(argc,argv);
     app.setStyle("Fusion");
     app.setWindowIcon(QIcon(":/brand/linkdesk.png"));
-    app.setOrganizationName("LinkDesk"); app.setApplicationName("LinkDesk"); app.setApplicationVersion("0.7.0");
+    app.setOrganizationName("LinkDesk"); app.setApplicationName("LinkDesk"); app.setApplicationVersion("0.7.1");
     QImageReader::setAllocationLimit(64);
     Platform::initialize();
     MainWindow window; window.show();

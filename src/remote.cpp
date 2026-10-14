@@ -131,7 +131,10 @@ RemoteHost::RemoteHost(QObject *parent) : QObject(parent) {
         if(bytes.isEmpty()) return;
         if(bytes.size()>Wire::MaxFrame) { m_wire->sendJson({{"type","error"},{"message","无损画面过大，请降低分辨率或选择智能增量模式。"}}); disconnectPeer(); return; }
         const bool incremental=m_peer->property("desktopDelta").toBool();
-        if(incremental && !video && bytes.size()==19) return; // Heartbeats keep idle sessions alive.
+        // Keep the displayed reference alive without retransmitting its pixels.
+        // A repeat is only 19 bytes, and lets older viewers distinguish a static
+        // desktop from a stalled capture/decoder pipeline.
+        if(incremental && !video && bytes.size()==19 && m_frameClock.elapsed()-m_lastFrameSent<3000) return;
         qint64 inFlight=0; for(const auto &pending:m_pendingFrames) inFlight+=pending.second;
         const qint64 limit=m_stream.lossless ? qint64(Wire::MaxFrame)*2 : 8*1024*1024;
         bool sent=false; const auto id=++m_frameId;

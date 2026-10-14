@@ -160,9 +160,17 @@ private slots:
             QTRY_VERIFY_WITH_TIMEOUT(!frames.isEmpty(),20000);
             const auto screenshot=qEnvironmentVariable("LINKDESK_LIST_SCREENSHOT"); if(!screenshot.isEmpty()) QVERIFY(list.grab().save(screenshot));
             auto image=qvariant_cast<QImage>(frames.last().first()); QVERIFY(!image.isNull()); QCOMPARE(image.size(),QSize(480,270));
+            // Idle suppression must not mark a usable thumbnail red or prevent
+            // expansion after the former 15-second stale-picture threshold.
+            QSignalSpy states(&list,&ConnectionList::connectionState);
+            QTest::qWait(16000);
+            QVERIFY(std::all_of(clients.begin(),clients.end(),[](RemoteClient *c){return c->active();}));
+            for(const auto &state:states) QVERIFY2(state.at(2).toInt()!=1,qPrintable(state.at(1).toString()));
             QTest::mouseDClick(first,Qt::LeftButton); QCoreApplication::processEvents();
             auto viewers=list.findChildren<ViewerWindow *>(); QCOMPARE(viewers.size(),10);
             QTRY_COMPARE_WITH_TIMEOUT(std::count_if(clients.begin(),clients.end(),[](RemoteClient *c){return c->streamSettings().width==1920;}),1,5000);
+            synthetic.fill(QColor("#70b080"));hosts[0]->setSyntheticFrame(synthetic);
+            QTRY_VERIFY_WITH_TIMEOUT(qvariant_cast<QImage>(frames.last().first()).width()==1280 && qAbs(qvariant_cast<QImage>(frames.last().first()).pixelColor(0,0).green()-176)<5,10000);
             auto second=list.findChild<QWidget *>("preview-"+agents[1]->deviceId()); QVERIFY(second); QTest::mouseDClick(second,Qt::LeftButton);
             QTRY_COMPARE_WITH_TIMEOUT(std::count_if(clients.begin(),clients.end(),[](RemoteClient *c){return c->streamSettings().width==1920;}),1,5000);
             QTRY_COMPARE_WITH_TIMEOUT(std::count_if(viewers.begin(),viewers.end(),[](ViewerWindow *v){return v->isVisible();}),1,5000);

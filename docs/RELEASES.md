@@ -1,5 +1,9 @@
 # Versions and publishing
 
+## v0.7.1
+
+Fix idle desktop thumbnails incorrectly turning red after 15 seconds and blocking expansion. Hosts send a 19-byte reference repeat at most every three seconds; viewers also recognize live capture metrics with no unacknowledged frames from v0.7.0 hosts. Regression covers ten idle thumbnails, subsequent expansion and changed pixels.
+
 ## v0.7.0
 
 Office streaming adds validated desktop move operations, conservative native dirty metadata, unchanged-frame suppression, independent cursor messages and lossless idle repair. Dynamic content can use hardware H.264 through Windows Media Foundation or macOS VideoToolbox, with image fallback and capability negotiation. TLS/TCP scheduling measures acknowledgements, encoding and capture queue delay without a fixed full-desktop bandwidth cap.
