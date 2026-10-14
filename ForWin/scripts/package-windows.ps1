@@ -1,10 +1,11 @@
 param(
     [Parameter(Mandatory=$true)][string]$QtRoot,
-    [string]$CompilerRoot = ''
+    [string]$CompilerRoot = '',
+    [string]$BuildDir = ''
 )
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
-$BuildDir = Join-Path $ProjectRoot 'ForWin/build'
+if (-not $BuildDir) { $BuildDir = Join-Path $ProjectRoot 'ForWin/build' }
 $DistRoot = Join-Path $ProjectRoot 'ForWin/dist'
 $Destination = Join-Path $DistRoot 'LinkDesk'
 if (-not (Test-Path "$BuildDir/LinkDesk.exe")) { throw 'Build LinkDesk first.' }
@@ -31,7 +32,7 @@ Copy-Item (Join-Path $ProjectRoot 'third_party/qt') (Join-Path $Destination 'lic
 $SavedPath = $env:PATH
 try {
     $env:PATH = "$env:SystemRoot/System32;$env:SystemRoot"
-    $Process = Start-Process "$Destination/LinkDesk.exe" -ArgumentList @('--screenshot', ('"' + "$Destination/startup.png" + '"')) -WorkingDirectory $Destination -Wait -PassThru
+    $Process = Start-Process "$Destination/LinkDesk.exe" -ArgumentList @('--screenshot', ('"' + "$Destination/startup.png" + '"')) -WorkingDirectory $Destination -WindowStyle Hidden -Wait -PassThru
     if ($Process.ExitCode -ne 0 -or -not (Test-Path "$Destination/startup.png")) { throw 'Packaged client startup failed.' }
 } finally { $env:PATH = $SavedPath }
 # The smoke screenshot may show a saved host password; keep it out of distributable bundles.

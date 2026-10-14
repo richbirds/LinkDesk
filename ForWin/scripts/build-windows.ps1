@@ -4,11 +4,14 @@ param(
     [string]$ServerConfig = '',
     [string]$PythonExecutable = '',
     [string]$CMake = 'cmake',
-    [string]$Ninja = 'ninja'
+    [string]$Ninja = 'ninja',
+    [string]$BuildDir = '',
+    [string]$SourceRoot = ''
 )
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
-$BuildDir = Join-Path $ProjectRoot 'ForWin/build'
+if (-not $BuildDir) { $BuildDir = Join-Path $ProjectRoot 'ForWin/build' }
+if (-not $SourceRoot) { $SourceRoot = $ProjectRoot }
 if (-not (Test-Path (Join-Path $QtRoot 'bin/Qt6Core.dll'))) { throw 'QtRoot must be a Windows Qt 6.5+ desktop kit.' }
 $env:PATH = "$(Join-Path $QtRoot 'bin');$env:PATH"
 if ($CompilerRoot) { $env:PATH = "$(Join-Path $CompilerRoot 'bin');$env:PATH" }
@@ -17,7 +20,7 @@ if (-not $ServerConfig) {
     $candidate = Join-Path $ProjectRoot 'config/linkdesk-server.json'
     if (Test-Path $candidate) { $ServerConfig = $candidate }
 }
-$argsConfigure = @('-S', (Join-Path $ProjectRoot 'ForWin'), '-B', $BuildDir, '-G', 'Ninja',
+$argsConfigure = @('-S', (Join-Path $SourceRoot 'ForWin'), '-B', $BuildDir, '-G', 'Ninja',
     "-DCMAKE_PREFIX_PATH=$QtRoot", "-DCMAKE_MAKE_PROGRAM=$Ninja", '-DCMAKE_BUILD_TYPE=Release')
 if ($CompilerRoot) {
     $Compiler = Join-Path $CompilerRoot "bin/g++.exe"

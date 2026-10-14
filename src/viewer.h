@@ -19,6 +19,7 @@ public:
     void setControl(bool enabled);
     void releaseInput();
     void clearFrame();
+    void setRemoteCursor(const QImage &image,const QPoint &hotspot,const QPointF &position,bool visible);
     bool controlEnabled() const { return m_control; }
 signals:
     void input(const QJsonObject &event);
@@ -40,6 +41,10 @@ private:
     bool m_control = false;
     QSet<int> m_keys;
     QElapsedTimer m_move;
+    QImage m_cursorImage;
+    QPoint m_cursorHotspot;
+    QPointF m_cursorPosition;
+    bool m_cursorVisible=false;
 };
 class ViewerWindow : public QMainWindow {
     Q_OBJECT

@@ -5,10 +5,11 @@
 #include <QImageReader>
 #include <QtEndian>
 #include <cstring>
+#include <QElapsedTimer>
 namespace {
 constexpr int Tile=128;
 constexpr qint64 MaxPixels=8000000;
-enum Kind : quint8 { ImageKey=1,Delta=3,Repeat=4 };
+enum Kind : quint8 { ImageKey=1,Delta=3,Repeat=4,MoveDelta=5 };
 bool validSize(int w,int h) { return w>0 && h>0 && w<=4096 && h<=4096 && qint64(w)*h<=MaxPixels; }
 QByteArray header(Kind kind,quint32 base,quint32 sequence,QSize size,quint16 count=0) {
     QByteArray bytes("LDD1",4); QDataStream out(&bytes,QIODevice::Append); out.setVersion(QDataStream::Qt_6_0);
@@ -23,17 +24,59 @@ bool decodeImage(const QByteArray &bytes,QSize expected,QImage *image) {
     *image=reader.read().convertToFormat(QImage::Format_RGBA8888); return !image->isNull();
 }
 }
-void DesktopEncoder::reset() { m_reference={}; m_candidate={}; m_sequence=0; m_candidateSequence=0; }
-void DesktopEncoder::commit() { if(!m_candidate.isNull()) { m_reference=m_candidate; m_sequence=m_candidateSequence; m_candidate={}; } }
+void DesktopEncoder::reset() { m_reference={}; m_candidate={}; m_sequence=0; m_candidateSequence=0; m_referenceSerial=0; m_referenceLossy=false; m_lastChange=0; }
+void DesktopEncoder::commit() { if(!m_candidate.isNull()) { m_reference=m_candidate; m_sequence=m_candidateSequence; m_referenceSerial=m_candidateSerial; m_referenceLossy=m_candidateLossy; m_candidate={}; } }
 QByteArray DesktopEncoder::encode(const QImage &source,int quality,bool lossless) {
+    static thread_local QElapsedTimer clock; if(!clock.isValid()) clock.start();
+    CaptureFrame frame; frame.image=source; return encode(frame,quality,lossless,clock.elapsed());
+}
+QByteArray DesktopEncoder::encode(const CaptureFrame &frame,int quality,bool lossless,qint64 nowMs) {
+    const auto &source=frame.image;
     if(!validSize(source.width(),source.height())) return {};
     const auto image=source.convertToFormat(QImage::Format_RGBA8888); QList<QRect> dirty; qint64 area=0;
     const bool key=m_reference.size()!=image.size();
+    QImage predicted=m_reference;
+    QList<DesktopMove> moves;
+    const QRect bounds(QPoint(0,0),image.size());
+    auto matches=[&](const DesktopMove &move) {
+        const QRect src(move.source,move.destination.size());
+        if(!bounds.contains(src) || !bounds.contains(move.destination) || src.isEmpty() || src==move.destination) return false;
+        for(int row=0;row<src.height();++row)
+            if(std::memcmp(m_reference.constScanLine(src.y()+row)+src.x()*4,image.constScanLine(move.destination.y()+row)+move.destination.x()*4,src.width()*4)) return false;
+        return true;
+    };
+    if(m_office && !key) {
+        qint64 copiedPixels=0;
+        for(const auto &move:frame.moves) if(moves.size()<256 && matches(move)) { const auto pixels=qint64(move.destination.width())*move.destination.height();if(copiedPixels+pixels<=MaxPixels) { moves.append(move);copiedPixels+=pixels; } }
+        // Validate a full-width scroll against the actual committed raw frame.
+        // Metadata is only a hint: captures may have been dropped since that frame.
+        if(moves.isEmpty() && image.height()>64 && quality>30) {
+            int top=0,bottom=image.height();
+            while(top<bottom && !std::memcmp(image.constScanLine(top),m_reference.constScanLine(top),image.width()*4)) ++top;
+            while(bottom>top && !std::memcmp(image.constScanLine(bottom-1),m_reference.constScanLine(bottom-1),image.width()*4)) --bottom;
+            const int mid=(top+bottom)/2,limit=qMin(512,(bottom-top)/3);
+            for(int distance=1;distance<=limit && moves.isEmpty();++distance) for(int sign:{-1,1}) {
+                const int dy=distance*sign;
+                if(std::memcmp(image.constScanLine(mid),m_reference.constScanLine(mid-dy),image.width()*4)) continue;
+                DesktopMove move{QPoint(0,top+qMax(0,-dy)),QRect(0,top+qMax(0,dy),image.width(),bottom-top-distance)};
+                if(matches(move)) { moves.append(move); break; }
+            }
+        }
+        if(!moves.isEmpty()) {
+            predicted=m_reference.copy();
+            for(const auto &move:moves) for(int row=0;row<move.destination.height();++row)
+                std::memcpy(predicted.scanLine(move.destination.y()+row)+move.destination.x()*4,m_reference.constScanLine(move.source.y()+row)+move.source.x()*4,move.destination.width()*4);
+        }
+    }
+    const bool trusted=m_office && !key && frame.regionsValid && frame.previousSerial==m_referenceSerial && m_referenceSerial;
+    QRegion affected=frame.dirty;
+    for(const auto &move:frame.moves) affected+=move.destination;
     if(!key) for(int y=0;y<image.height();y+=Tile) for(int x=0;x<image.width();x+=Tile) {
         QRect rect(x,y,qMin(Tile,image.width()-x),qMin(Tile,image.height()-y));
+        if(trusted && !affected.intersects(rect)) continue;
         int left=rect.width(),right=-1,top=rect.height(),bottom=-1;
         for(int row=0;row<rect.height();++row) {
-            const auto current=image.constScanLine(y+row)+x*4,previous=m_reference.constScanLine(y+row)+x*4;
+            const auto current=image.constScanLine(y+row)+x*4,previous=predicted.constScanLine(y+row)+x*4;
             if(std::memcmp(current,previous,rect.width()*4)==0) continue;
             top=qMin(top,row); bottom=row;
             int first=0; while(first<left && std::memcmp(current+first*4,previous+first*4,4)==0) ++first; left=qMin(left,first);
@@ -44,12 +87,21 @@ QByteArray DesktopEncoder::encode(const QImage &source,int quality,bool lossless
     static thread_local int traceCount=0;
     if(qEnvironmentVariableIsSet("LINKDESK_CODEC_TRACE") && traceCount++<12) qInfo()<<"Desktop changes:"<<area<<"pixels, rectangles:"<<dirty.size()<<"key:"<<key;
     m_candidate={};
-    if(!key && dirty.isEmpty()) return header(Repeat,m_sequence,m_sequence,image.size());
-    const quint32 next=m_sequence+1; m_candidate=image; m_candidateSequence=next;
-    if(!lossless && quality<=30) return header(ImageKey,0,next,image.size())+encodeImage(image,false,quality);
+    m_changedRatio=key ? 1.0 : double(area)/(image.width()*image.height());
+    const bool unchanged=!key && dirty.isEmpty() && moves.isEmpty();
+    const bool refine=unchanged && m_office && m_referenceLossy && nowMs-m_lastChange>=600;
+    if(unchanged && !refine) return header(Repeat,m_sequence,m_sequence,image.size());
+    if(!unchanged) m_lastChange=nowMs;
+    const quint32 next=m_sequence+1; m_candidate=image; m_candidateSequence=next; m_candidateSerial=frame.serial; m_candidateLossy=m_referenceLossy;
+    if(refine) { m_candidateLossy=false; return header(ImageKey,0,next,image.size())+encodeImage(image,true,quality); }
+    if(!lossless && quality<=30) { m_candidateLossy=true; return header(ImageKey,0,next,image.size())+encodeImage(image,false,quality); }
     if(!key && area<qint64(image.width())*image.height()*0.45) {
-        auto packet=header(Delta,m_sequence,next,image.size(),quint16(dirty.size()));
+        auto packet=header(moves.isEmpty() ? Delta : MoveDelta,m_sequence,next,image.size(),quint16(dirty.size()));
         QDataStream out(&packet,QIODevice::Append); out.setVersion(QDataStream::Qt_6_0);
+        if(!moves.isEmpty()) {
+            out<<quint16(moves.size());
+            for(const auto &move:moves) out<<quint16(move.source.x())<<quint16(move.source.y())<<quint16(move.destination.x())<<quint16(move.destination.y())<<quint16(move.destination.width())<<quint16(move.destination.height());
+        }
         for(const auto &r:dirty) {
             const auto tile=encodeImage(image.copy(r),true,quality);
             if(tile.isEmpty()) return {};
@@ -57,16 +109,17 @@ QByteArray DesktopEncoder::encode(const QImage &source,int quality,bool lossless
             out.writeRawData(tile.constData(),tile.size());
         }
         // Photographic changes may be cheaper as a whole JPEG than lossless tiles.
-        if(!lossless && packet.size()>32*1024) { auto full=encodeImage(image,false,quality); if(!full.isEmpty() && full.size()<packet.size()) return header(ImageKey,0,next,image.size())+full; }
+        if(!lossless && packet.size()>32*1024) { auto full=encodeImage(image,false,quality); if(!full.isEmpty() && full.size()<packet.size()) { m_candidateLossy=true; return header(ImageKey,0,next,image.size())+full; } }
         return packet;
     }
-    if(lossless) return header(ImageKey,0,next,image.size())+encodeImage(image,true,quality);
+    if(lossless) { m_candidateLossy=false; return header(ImageKey,0,next,image.size())+encodeImage(image,true,quality); }
     auto full=encodeImage(image,false,quality);
     if(full.isEmpty()) return {};
     if(key) {
         auto png=encodeImage(image,true,quality);
-        if(!png.isEmpty() && (png.size()<=256*1024 || png.size()<=full.size()*1.5)) return header(ImageKey,0,next,image.size())+png;
+        if(!png.isEmpty() && (png.size()<=256*1024 || png.size()<=full.size()*1.5)) { m_candidateLossy=false; return header(ImageKey,0,next,image.size())+png; }
     }
+    m_candidateLossy=true;
     return header(ImageKey,0,next,image.size())+full;
 }
 void DesktopDecoder::reset() { m_image={}; m_sequence=0; }
@@ -84,8 +137,20 @@ bool DesktopDecoder::decode(const QByteArray &packet,QImage *image,bool *changed
     if(kind==ImageKey) {
         if(base || count || !sequence) return fail();
         if(!decodeImage(body,size,&result)) return fail();
-    } else if(kind==Delta) {
-        if(!count || m_image.size()!=size || m_image.isNull() || base!=m_sequence || sequence!=base+1) return fail();
+    } else if(kind==Delta || kind==MoveDelta) {
+        if((!count && kind==Delta) || m_image.size()!=size || m_image.isNull() || base!=m_sequence || sequence!=base+1) return fail();
+        QList<DesktopMove> moves;
+        if(kind==MoveDelta) {
+            quint16 moveCount=0; in>>moveCount; if(!moveCount || moveCount>256) return fail();
+            qint64 movePixels=0;
+            for(int i=0;i<moveCount;++i) {
+                quint16 sx,sy,x,y,rw,rh; in>>sx>>sy>>x>>y>>rw>>rh;
+                QRect dest(x,y,rw,rh),src(sx,sy,rw,rh); const QRect bounds(QPoint(0,0),size);
+                movePixels+=qint64(rw)*rh;
+                if(in.status()!=QDataStream::Ok || !rw || !rh || movePixels>MaxPixels || !bounds.contains(dest) || !bounds.contains(src)) return fail();
+                moves.append({src.topLeft(),dest});
+            }
+        }
         QList<QPair<QRect,QImage>> patches; qint64 pixels=0;
         for(int i=0;i<count;++i) {
             quint16 x,y,rw,rh; quint32 length; in>>x>>y>>rw>>rh>>length; QRect r(x,y,rw,rh);
@@ -96,6 +161,9 @@ bool DesktopDecoder::decode(const QByteArray &packet,QImage *image,bool *changed
         }
         if(!in.atEnd()) return fail();
         result=m_image.copy();
+        // All copies read the immutable previous frame, including overlapping moves.
+        for(const auto &move:moves) for(int y=0;y<move.destination.height();++y)
+            std::memcpy(result.scanLine(move.destination.y()+y)+move.destination.x()*4,m_image.constScanLine(move.source.y()+y)+move.source.x()*4,move.destination.width()*4);
         for(const auto &patch:patches) { const auto &r=patch.first; const auto &tile=patch.second;
             for(int y=0;y<r.height();++y) std::memcpy(result.scanLine(r.y()+y)+r.x()*4,tile.constScanLine(y),r.width()*4);
         }

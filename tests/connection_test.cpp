@@ -68,7 +68,8 @@ private slots:
         client.connectTo("127.0.0.1",host.port(),host.code(),"test",host.fingerprint());
         QTRY_VERIFY_WITH_TIMEOUT(!applied.isEmpty(),10000);
         QVERIFY(applied.first().first().toJsonObject().value("lossless").toBool());
-        QTRY_VERIFY_WITH_TIMEOUT(frames.size()>=2,5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!frames.isEmpty(),5000);
+        const auto staticCount=frames.size();QTest::qWait(1200);QCOMPARE(frames.size(),staticCount);QVERIFY(client.active());
         bool png=false;
         for (const auto &args : frames) {
             auto image=qvariant_cast<QImage>(args.first()); QVERIFY(!image.isNull()); QCOMPARE(image.size(),QSize(1280,720));
@@ -88,6 +89,26 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!errors.isEmpty(),10000);
         QVERIFY(errors.first().first().toString().contains("验证码错误"));
         QCOMPARE(connected.size(),0); QCOMPARE(frames.size(),0); QVERIFY(!client.active());
+    }
+    void videoSwitchAndUnavailableEncoderFallback() {
+        const auto saved=qgetenv("LINKDESK_DISABLE_H264");
+        for(bool disabled:{false,true}) {
+            if(disabled) qputenv("LINKDESK_DISABLE_H264","1");else qunsetenv("LINKDESK_DISABLE_H264");
+            RemoteHost host;QString error;QVERIFY2(host.start(0,&error,true),qPrintable(error));
+            QImage source(1280,720,QImage::Format_RGB32);source.fill(QColor(90,150,180));host.setSyntheticFrame(source);
+            RemoteClient client;StreamSettings settings;settings.width=1280;settings.height=720;settings.codec="h264";client.setStreamSettings(settings);
+            QImage received;connect(&client,&RemoteClient::imageFrame,&client,[&](const QImage &image,qint64,bool){received=image;});
+            client.connectTo("127.0.0.1",host.port(),host.code(),"synthetic",host.fingerprint());
+            QTRY_VERIFY_WITH_TIMEOUT(!received.isNull(),10000);
+            QTRY_VERIFY_WITH_TIMEOUT(host.streamingMetrics().value("videoFrames").toInt()>0 || host.streamingMetrics().value("videoFallbacks").toInt()>0,5000);
+            if(disabled) { QCOMPARE(host.streamingMetrics().value("videoFrames").toInt(),0);QVERIFY(host.streamingMetrics().value("videoFallbacks").toInt()>0); }
+            // Idle repair must restore exact pixels after video or a lossy image fallback.
+            QTRY_VERIFY_WITH_TIMEOUT(received.convertToFormat(QImage::Format_RGB32)==source,5000);
+            source.fill(QColor(200,80,40));settings.lossless=true;client.setStreamSettings(settings);host.setSyntheticFrame(source);
+            QTRY_VERIFY_WITH_TIMEOUT(received.convertToFormat(QImage::Format_RGB32)==source,5000);QVERIFY(client.active());
+            client.disconnectPeer();host.stop();
+        }
+        if(saved.isNull()) qunsetenv("LINKDESK_DISABLE_H264");else qputenv("LINKDESK_DISABLE_H264",saved);
     }
     void rejectingCertificateNeverAuthenticates() {
         RemoteHost host; QString error; QVERIFY2(host.start(0,&error,true),qPrintable(error));

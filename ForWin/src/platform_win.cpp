@@ -130,6 +130,34 @@ QImage Platform::captureScreen(QScreen *screen, const QSize &maximum) {
 QString Platform::permissionHelp() {
     return "Windows：请保持已登录桌面、电脑唤醒。普通权限不能控制管理员窗口、UAC 安全桌面或登录屏幕。";
 }
+CaptureFrame Platform::captureFrame(QScreen *screen,const QSize &maximum) {
+    auto frame=captureDesktopFrameDXGI(primaryRect(),maximum.boundedTo(primaryRect().size()));
+    if(frame.image.isNull()) frame.image=captureScreen(screen,maximum);
+    return frame;
+}
+void Platform::stopCapture() {}
+CursorFrame Platform::captureCursor(const QRect &geometry) {
+    CursorFrame result; CURSORINFO info{sizeof(CURSORINFO)};
+    if(!GetCursorInfo(&info) || !(info.flags&CURSOR_SHOWING) || geometry.isEmpty()) return result;
+    result.position=QPointF(double(info.ptScreenPos.x-geometry.x())/geometry.width(),double(info.ptScreenPos.y-geometry.y())/geometry.height());
+    result.visible=geometry.contains(QPoint(info.ptScreenPos.x,info.ptScreenPos.y));
+    static HCURSOR previous=nullptr; static QImage shape; static QPoint hotspot;
+    if(previous!=info.hCursor) {
+        ICONINFO icon{};
+        if(GetIconInfo(info.hCursor,&icon)) {
+            hotspot=QPoint(int(icon.xHotspot),int(icon.yHotspot));
+            BITMAP bitmap{}; GetObject(icon.hbmColor ? icon.hbmColor : icon.hbmMask,sizeof(bitmap),&bitmap);
+            const int w=qBound(1,int(bitmap.bmWidth),128),h=qBound(1,int(icon.hbmColor ? bitmap.bmHeight : bitmap.bmHeight/2),128);
+            // Draw on black and white to recover opacity, including monochrome cursors.
+            QImage black(w,h,QImage::Format_RGB32),white(w,h,QImage::Format_RGB32); black.fill(Qt::black); white.fill(Qt::white);
+            auto draw=[&](QImage &image) { HDC dc=CreateCompatibleDC(nullptr); BITMAPINFO bi{}; bi.bmiHeader.biSize=sizeof(BITMAPINFOHEADER); bi.bmiHeader.biWidth=w; bi.bmiHeader.biHeight=-h; bi.bmiHeader.biPlanes=1; bi.bmiHeader.biBitCount=32; void *pixels=nullptr; HBITMAP bm=CreateDIBSection(dc,&bi,DIB_RGB_COLORS,&pixels,nullptr,0); if(bm && pixels) { auto old=SelectObject(dc,bm); memcpy(pixels,image.constBits(),image.sizeInBytes()); DrawIconEx(dc,0,0,info.hCursor,w,h,0,nullptr,DI_NORMAL); GdiFlush(); memcpy(image.bits(),pixels,image.sizeInBytes()); SelectObject(dc,old); } if(bm) DeleteObject(bm); DeleteDC(dc); };
+            draw(black); draw(white); shape=QImage(w,h,QImage::Format_ARGB32);
+            for(int y=0;y<h;++y) for(int x=0;x<w;++x) { const QRgb b=black.pixel(x,y),a=white.pixel(x,y); const int alpha=255-qBound(0,qRed(a)-qRed(b),255); shape.setPixel(x,y,alpha ? qRgba(qMin(255,qRed(b)*255/alpha),qMin(255,qGreen(b)*255/alpha),qMin(255,qBlue(b)*255/alpha),alpha) : 0); }
+            if(icon.hbmColor) DeleteObject(icon.hbmColor); if(icon.hbmMask) DeleteObject(icon.hbmMask); previous=info.hCursor;
+        }
+    }
+    result.image=shape; result.hotspot=hotspot; return result;
+}
 
 void Platform::initialize() { QSslSocket::setActiveBackend("schannel"); }
 QString Platform::bundledConfigPath() { return QCoreApplication::applicationDirPath()+"/server.json"; }

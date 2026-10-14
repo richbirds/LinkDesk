@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QDateTime>
 #include <QNetworkInterface>
+#include <QNetworkProxy>
 #include <QJsonArray>
 #include <QSettings>
 #include <QFile>
@@ -324,17 +325,19 @@ void RelayAgent::resolveDevice(const QString &target) {
 void RelayAgent::probePeer(const QString &host,quint16 port,const QString &target,const QString &fp,std::function<void()> fallback) {
     if (m_pendingTarget!=target) return;
     auto socket=new QSslSocket(this); m_probe=socket;
+    // A LAN peer must not be sent through a system HTTP/SOCKS proxy.
+    socket->setProxy(QNetworkProxy(QNetworkProxy::NoProxy));
     auto config=m_config; config.host=host; config.port=port; config.fingerprint=fp;
     auto fail=[this,socket,target,fallback] { if (m_probe!=socket || m_pendingTarget!=target) return; m_probe.clear(); socket->abort(); socket->deleteLater(); fallback(); };
-    configureSocket(socket,config,this,[fail](const QString &){fail();},[this,socket,host,port,target,fp] {
+    configureSocket(socket,config,this,[this,fail](const QString &reason){emit status("局域网 TLS 校验失败："+reason);fail();},[this,socket,host,port,target,fp] {
         if (m_probe!=socket || m_pendingTarget!=target) return;
         m_probe.clear(); m_pendingTarget.clear(); m_directActive=true; socket->abort(); socket->deleteLater();
         const auto prefix="lan/"+m_config.host+":"+QString::number(m_config.port)+"/"+target+"/";
         QSettings settings; settings.setValue(prefix+"host",host); settings.setValue(prefix+"port",int(port)); settings.setValue(prefix+"fingerprint",fp);
         emit status("使用局域网直连"); emit directReady(host,port,target,fp);
     });
-    connect(socket,&QSslSocket::errorOccurred,this,[fail](QAbstractSocket::SocketError){fail();});
-    QTimer::singleShot(2000,socket,fail); socket->connectToHostEncrypted(host,port);
+    connect(socket,&QSslSocket::errorOccurred,this,[this,socket,fail](QAbstractSocket::SocketError){emit status("局域网直连失败："+socket->errorString());fail();});
+    QTimer::singleShot(2000,socket,[this,socket,fail]{if(m_probe==socket) { emit status("局域网探测超时，尝试中继。");fail(); }}); socket->connectToHostEncrypted(host,port);
 }
 void RelayAgent::connectViaRelay(const QString &target) {
     if (!m_online) { emit error("服务器尚未连接，请先配置服务器并等待在线。"); emit viewerClosed(); return; }

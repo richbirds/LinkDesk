@@ -97,7 +97,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_rel
     auto help=new QPushButton("◎   使用指南"); nav->addWidget(help);
     auto serverSettings=new QPushButton("◇   软件设置"); serverSettings->setObjectName("softwareSettingsButton"); nav->addWidget(serverSettings);
     connect(serverSettings,&QPushButton::clicked,this,&MainWindow::configureServer);
-    nav->addStretch(); nav->addWidget(label("C++ / Qt 6\n互联网中继 · v0.6.0","muted")); row->addWidget(sidebar);
+    nav->addStretch(); nav->addWidget(label("C++ / Qt 6\n互联网中继 · v0.7.0","muted")); row->addWidget(sidebar);
     connect(help,&QPushButton::clicked,this,[this] {
         QMessageBox::information(this,"使用指南",
           "1. 两台电脑打开软件；预配置版本会自动连接服务器。\n"

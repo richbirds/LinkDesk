@@ -8,7 +8,7 @@ class QSslSocket;
 class Wire : public QObject {
     Q_OBJECT
 public:
-    enum Type : quint8 { Json = 1, Frame = 2, Desktop = 3 };
+    enum Type : quint8 { Json = 1, Frame = 2, Desktop = 3, Video = 4 };
     static constexpr quint32 MaxFrame = 8 * 1024 * 1024;
     static constexpr quint32 MaxJson = 16 * 1024;
     explicit Wire(QSslSocket *socket, QObject *parent = nullptr);
@@ -16,12 +16,15 @@ public:
     bool sendJson(const QJsonObject &json);
     bool sendFrame(const QByteArray &jpeg);
     bool sendDesktop(const QByteArray &packet);
+    bool sendVideo(const QByteArray &packet);
+    bool visualWritable() const;
     // Public for deterministic fragmentation and abuse tests.
     void feed(const QByteArray &bytes);
 signals:
     void jsonReceived(const QJsonObject &json);
     void frameReceived(const QByteArray &jpeg);
     void desktopReceived(const QByteArray &packet);
+    void videoReceived(const QByteArray &packet);
     void invalidPacket(const QString &reason);
 private:
     QSslSocket *m_socket;

@@ -4,21 +4,22 @@
 
 C++17 / Qt 6 的 Mac、Windows 远程桌面客户端，以及 Python Ubuntu 注册与中转服务。使用九位设备 ID 和连接密码连接，支持同网段直连及公网中转。
 
-当前功能版本 **v0.6.0**。
+当前功能版本 **v0.7.0**。
 
 ## 功能
 
 - 端到端 TLS、设备证书指纹检查、连接密码验证及断线重连。
-- 智能增量传图：只发送变化区域，静止画面复用，局部更新无损压缩。
+- 办公增量传图：dirty/move 区域复制、滚动复用、静止跳过编码、独立光标、空闲文字无损补帧。
+- 动态场景可切换硬件 H.264；Windows Media Foundation、Mac VideoToolbox，失败回退 PNG/JPEG。
 - 1–30 FPS 目标帧率，画质/分辨率可选；实际帧率受采集和网络影响。
-- Windows DXGI GPU 采集，失败时回退 GDI；Mac 原生屏幕采集。
+- Windows DXGI GPU 采集，失败时回退 GDI；Mac ScreenCaptureKit 采集。
 - 鼠标、键盘控制，需要被控端主动授权。
 - 连接列表、分组、命名、多台缩略图；双击只展开选中的桌面。
 - 完整画面不设固定带宽上限，缩略图采用低带宽设置。
 - 管理员密码保护服务器设置，首次默认密码为 `888888`。
 - Mac 本机加密保存密码，不使用钥匙串；Windows 使用当前用户 DPAPI。
 
-目前尚不支持音频、文件传输、剪贴板同步、公网 NAT 穿透或 H.264/HEVC 视频编码。30 FPS 是目标，不是性能保证。
+目前尚不支持音频、文件传输、剪贴板同步、公网 NAT 穿透、HEVC 或 4:4:4 视频。30 FPS 是目标，不是性能保证。v0.7.0 已验证 Windows 构建、硬件编码和回环 TLS；Mac 新后端仍需在 macOS 实机编译与验证。
 
 ## 快速开始
 
@@ -42,6 +43,7 @@ ctest --test-dir ForMac/build --output-on-failure
 - [Mac 构建与打包](ForMac/README.md)
 - [Windows 构建与打包](ForWin/README.md)
 - [版本与同步说明](docs/RELEASES.md)
+- [采集、编码、网络反馈与合成基准](docs/STREAMING.md)
 - [图标设计与生成说明](assets/icons/README.md)
 
 也可在 Qt Creator 打开根目录或平台目录的 `CMakeLists.txt`。构建没有默认私有服务器，用户需导入自己的配置。

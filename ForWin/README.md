@@ -2,7 +2,7 @@
 
 ## 使用
 
-解压发布包中的整个 LinkDesk 文件夹，双击 LinkDesk.exe。不要单独复制 exe；Qt DLL、插件和 server.json 必须一起保留。
+解压发布包中的整个 LinkDesk 文件夹，双击 LinkDesk.exe。不要单独复制 exe；Qt DLL 和插件必须一起保留。无预配置包可在软件设置中导入自己的服务器配置。
 
 两台电脑等待“服务器在线”；被控端开启共享，按需要勾选鼠标键盘控制。主控端输入对方九位设备 ID 和八位临时密码。与 Mac 客户端复用同一协议、同一 Ubuntu 中继服务器。
 
@@ -12,7 +12,7 @@ Windows 需保持已登录的交互桌面和电脑唤醒。此版本不会绕过
 
 ## 构建
 
-- Windows Qt 6.5+ Desktop Kit，Qt 6.11.2 MinGW 13.1 x64 为本次构建工具链。
+- Windows Qt 6.5+ Desktop Kit，v0.7.0 使用 Qt 6.8.3 / MinGW 13.1 x64 验证。
 - CMake、Ninja；MinGW Kit 需匹配版本的编译器。MSVC Kit 需从对应 Developer PowerShell 启动。
 - Python 3.10+ 可选；仅运行本地 Python 中继测试时需要，客户端运行不需要。
 
@@ -25,12 +25,17 @@ Windows 需保持已登录的交互桌面和电脑唤醒。此版本不会绕过
 
 生成 `ForWin/build/LinkDesk.exe`，打包后生成 `ForWin/dist/LinkDesk-Windows-x64.zip`。若根目录有 `config/linkdesk-server.json`，会自动将其作为该私有服务器的客户端配置。
 
+构建脚本支持 `-BuildDir` 和 `-SourceRoot`，打包脚本支持相同的 `-BuildDir`。若 Qt moc 无法处理中文路径，可使用 ASCII 路径的目录联接作为 `SourceRoot`，并在外部 ASCII 目录构建；本机 SDK 路径只保存到忽略的 `.local-build.env`。
+
+硬件 H.264 依赖系统 Media Foundation 与显卡编码能力。组件缺失、编码失败或对端解码失败时自动使用增量图像。可用 `LINKDESK_DISABLE_H264=1` 验证兼容回退。硬件不可用时不影响应用启动。
+
 Qt Creator 可直接打开 `ForWin/CMakeLists.txt`，选择 Windows Kit。构建代码来自根目录 src/，无需复制 Mac 工程。
 
 ## 平台代码
 
 - src/input_win.cpp：SendInput 与物理屏幕坐标映射。
 - src/platform_win.cpp：CNG 证书、Schannel 选择、DXGI GPU 主屏采集及 GDI 回退。
+- src/video_win.cpp：低延迟硬件 H.264、NV12 转换和解码。
 - scripts/：原生 Windows 构建与 windeployqt 打包，打包启动检查。
 
 

@@ -32,6 +32,8 @@ bool Wire::send(Type type, const QByteArray &payload) {
 bool Wire::sendJson(const QJsonObject &json) { return send(Json, QJsonDocument(json).toJson(QJsonDocument::Compact)); }
 bool Wire::sendFrame(const QByteArray &jpeg) { return send(Frame, jpeg); }
 bool Wire::sendDesktop(const QByteArray &data) { return send(Desktop,data); }
+bool Wire::sendVideo(const QByteArray &data) { return send(Video,data); }
+bool Wire::visualWritable() const { return m_socket && m_socket->isEncrypted() && m_socket->bytesToWrite()<=256*1024; }
 void Wire::feed(const QByteArray &bytes) {
     if (m_failed) return;
     auto fail = [this](const QString &reason) {
@@ -47,7 +49,7 @@ void Wire::feed(const QByteArray &bytes) {
     while (m_buffer.size() >= 5 && !m_failed) {
         auto type = quint8(m_buffer[0]);
         auto length = qFromBigEndian<quint32>(m_buffer.constData() + 1);
-        if ((type != Json && type != Frame && type != Desktop) || length == 0 || length > (type == Json ? MaxJson : MaxFrame)) {
+        if ((type != Json && type != Frame && type != Desktop && type != Video) || length == 0 || length > (type == Json ? MaxJson : MaxFrame)) {
             fail(QStringLiteral("无效的数据包类型或长度")); return;
         }
         if (m_buffer.size() < qsizetype(length) + 5) return;
@@ -55,6 +57,7 @@ void Wire::feed(const QByteArray &bytes) {
         m_buffer.remove(0, length + 5);
         if (type == Frame) emit frameReceived(payload);
         else if(type == Desktop) emit desktopReceived(payload);
+        else if(type == Video) emit videoReceived(payload);
         else {
             QJsonParseError error;
             auto doc = QJsonDocument::fromJson(payload, &error);

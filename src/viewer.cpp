@@ -56,7 +56,8 @@ void RemoteCanvas::setFrame(const QByteArray &jpeg) {
 }
 void RemoteCanvas::setImage(const QImage &image) { m_image=image; setProperty("encodedFrameSize",image.size()); update(); }
 void RemoteCanvas::setControl(bool enabled) { releaseInput(); m_control=enabled; }
-void RemoteCanvas::clearFrame() { releaseInput(); m_image=QImage(); setProperty("encodedFrameSize",QSize()); update(); }
+void RemoteCanvas::clearFrame() { releaseInput(); m_image=QImage();m_cursorVisible=false; setProperty("encodedFrameSize",QSize()); update(); }
+void RemoteCanvas::setRemoteCursor(const QImage &image,const QPoint &hotspot,const QPointF &position,bool visible) { m_cursorImage=image;m_cursorHotspot=hotspot;m_cursorPosition=position;m_cursorVisible=visible;update(); }
 void RemoteCanvas::releaseInput() {
     if (m_control) emit input({{"action","release"}});
     m_keys.clear();
@@ -64,7 +65,9 @@ void RemoteCanvas::releaseInput() {
 void RemoteCanvas::paintEvent(QPaintEvent *) {
     QPainter p(this); p.fillRect(rect(),QColor("#0c1220"));
     if (m_image.isNull()) { p.setPen(QColor("#a5b1c5")); p.drawText(rect(),Qt::AlignCenter,"正在等待远程画面…"); }
-    else { p.setRenderHint(QPainter::SmoothPixmapTransform); p.drawImage(imageRect(),m_image); }
+    else { p.setRenderHint(QPainter::SmoothPixmapTransform); const auto bounds=imageRect();p.drawImage(bounds,m_image);
+        if(m_cursorVisible && !m_cursorImage.isNull()) { p.save();p.setClipRect(bounds);const double scale=bounds.width()/m_image.width(); const QPointF position(bounds.x()+m_cursorPosition.x()*bounds.width()-m_cursorHotspot.x()*scale,bounds.y()+m_cursorPosition.y()*bounds.height()-m_cursorHotspot.y()*scale);p.drawImage(QRectF(position,QSizeF(m_cursorImage.size())*scale),m_cursorImage);p.restore(); }
+    }
 }
 void RemoteCanvas::pointer(QMouseEvent *e, bool isButton, bool down) {
     if (!m_control || m_image.isNull()) return;
@@ -124,19 +127,22 @@ ViewerWindow::ViewerWindow(RemoteClient *client, QWidget *parent) : QMainWindow(
         const auto current=m_client->streamSettings();
         QSpinBox fps,quality; fps.setRange(1,30); fps.setValue(current.fps); fps.setSuffix(" FPS");
         quality.setRange(40,95); quality.setValue(current.quality);
-        QComboBox resolution,format;
+        QComboBox resolution,format,codec;
         resolution.addItem("1280 × 720",1280); resolution.addItem("1920 × 1080",1920); resolution.addItem("2560 × 1440",2560);
         resolution.setCurrentIndex(resolution.findData(current.width));
-        format.addItem("智能增量 · 动态区域使用 JPEG"); format.addItem("智能增量 · 全部区域无损"); format.setCurrentIndex(current.lossless ? 1 : 0);
+        format.addItem("自动优化 · 静态文字无损修复"); format.addItem("全部区域无损"); format.setCurrentIndex(current.lossless ? 1 : 0);
+        codec.addItem("自动选择",QString("auto"));codec.addItem("增量图像",QString("desktop"));codec.addItem("优先硬件 H.264",QString("h264"));codec.setCurrentIndex(codec.findData(current.codec));
         quality.setEnabled(!current.lossless);
         connect(&format,&QComboBox::currentIndexChanged,&quality,[&](int index){ quality.setEnabled(index==0); });
         form->addRow("目标帧率",&fps); form->addRow("最高分辨率",&resolution); form->addRow("压缩方式",&format);
         form->addRow("JPEG 画质",&quality);
-        auto help=new QLabel("网络或采集较慢时，实际帧率会低于目标。\n保留所选画质，拥堵时降低实际帧率，不自动缩小画面。\n两端升级到 v0.6 后可只传变化区域；静止画面不重复发送。"); help->setWordWrap(true); layout->addWidget(help);
+        form->addRow("动态画面编码",&codec);
+        auto help=new QLabel("静止时复用画面，稳定后自动修复文字清晰度。\n动态画面可使用硬件编码；不可用时自动回退。\n网络拥堵时控制排队，不自动缩小画面。无损模式使用增量图像。"); help->setWordWrap(true); layout->addWidget(help);
         QDialogButtonBox buttons(QDialogButtonBox::Ok|QDialogButtonBox::Cancel); layout->addWidget(&buttons);
         connect(&buttons,&QDialogButtonBox::accepted,&dialog,&QDialog::accept); connect(&buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
         if (dialog.exec()==QDialog::Accepted) {
             auto next=current; next.fps=fps.value(); next.quality=quality.value(); next.lossless=format.currentIndex()==1;
+            next.codec=codec.currentData().toString();
             next.width=resolution.currentData().toInt(); next=StreamSettings::fromJson(next.json());
             m_fullSettings=next; m_client->setStreamSettings(next); QSettings().setValue("viewer/streamSettings",next.json());
         }
@@ -163,6 +169,8 @@ ViewerWindow::ViewerWindow(RemoteClient *client, QWidget *parent) : QMainWindow(
         if(changed || !m_canvas->property("encodedFrameSize").toSize().isValid()) m_canvas->setImage(image);
         if(changed) ++m_frames; m_bytes+=bytes;
     });
+    connect(client,&RemoteClient::cursorFrame,m_canvas,&RemoteCanvas::setRemoteCursor);
+    connect(client,&RemoteClient::streamMetrics,this,[this](const QJsonObject &j) { m_stats->setToolTip(QString("编码 %1 ms · ACK 往返 %2 ms · 采集排队 %3 ms · 在途 %4 帧").arg(j.value("encodeMs").toDouble(),0,'f',1).arg(j.value("ackRttMs").toDouble(),0,'f',1).arg(j.value("captureQueueMs").toDouble(),0,'f',1).arg(j.value("pendingFrames").toInt())); });
     m_statsTimer.setInterval(1000);
     connect(&m_statsTimer,&QTimer::timeout,this,[this] {
         const auto elapsed=qMax<qint64>(1,m_clock.restart());

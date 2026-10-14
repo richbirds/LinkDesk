@@ -382,7 +382,13 @@ async def main(args):
     LOG.info("LinkDesk relay listening on %s:%s", args.bind, actual_port)
     stop = asyncio.Event()
     for signum in (signal.SIGINT, signal.SIGTERM):
-        asyncio.get_running_loop().add_signal_handler(signum, stop.set)
+        loop = asyncio.get_running_loop()
+        try:
+            loop.add_signal_handler(signum, stop.set)
+        except NotImplementedError:
+            # Windows' event loop has no add_signal_handler; local TLS integration
+            # tests use the same server implementation as Ubuntu deployments.
+            signal.signal(signum, lambda *_: loop.call_soon_threadsafe(stop.set))
     await stop.wait()
     await relay.close()
 

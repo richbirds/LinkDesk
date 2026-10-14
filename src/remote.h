@@ -1,6 +1,8 @@
 #pragma once
 #include "input.h"
 #include "desktopcodec.h"
+#include "videocodec.h"
+#include "streamscheduler.h"
 #include <QTcpServer>
 #include <QSslCertificate>
 #include <QSslKey>
@@ -14,6 +16,7 @@ class QSslSocket;
 struct StreamSettings {
     int fps=10, quality=88, width=1920, height=1080;
     bool lossless=false;
+    QString codec="auto";
     QJsonObject json() const;
     static StreamSettings fromJson(const QJsonObject &json);
 };
@@ -38,10 +41,13 @@ public:
     QString fingerprint() const;
     void rotateCode();
     bool setCode(const QString &code,QString *error=nullptr);
+    void setSyntheticFrame(const QImage &image) { if(m_testMode) m_syntheticFrame=image; }
+    QJsonObject streamingMetrics() const { auto metrics=m_scheduler.metrics(m_frameClock.isValid() ? m_frameClock.elapsed() : 0);metrics["transportBytes"]=double(m_transportBytes);metrics["videoFrames"]=double(m_videoFrames);metrics["videoFallbacks"]=double(m_videoFallbacks);return metrics; }
 signals:
     void status(const QString &message);
     void peerChanged(bool connected, const QString &name);
     void frameSent(qint64 bytes);
+    void streamMetrics(const QJsonObject &metrics);
 private:
     Listener m_listener;
     QSslCertificate m_cert;
@@ -63,6 +69,13 @@ private:
     qint64 m_lastCapture=-10000,m_lastFrameSent=-10000;
     QElapsedTimer m_frameClock;
     QQueue<QPair<qint64,int>> m_pendingFrames;
+    StreamScheduler m_scheduler;
+    QImage m_syntheticFrame;
+    quint64 m_frameId=0;
+    qint64 m_transportBytes=0,m_lastMetrics=0;
+    qint64 m_videoFrames=0,m_videoFallbacks=0;
+    QByteArray m_cursorShape;
+    QJsonObject m_lastCursor;
     StreamSettings m_stream;
     bool loadIdentity(QString *error);
     void accept(qintptr descriptor);
@@ -89,6 +102,8 @@ signals:
     void frame(const QByteArray &jpeg);
     void imageFrame(const QImage &image,qint64 wireBytes,bool changed);
     void streamSettingsApplied(const QJsonObject &settings);
+    void cursorFrame(const QImage &image,const QPoint &hotspot,const QPointF &position,bool visible);
+    void streamMetrics(const QJsonObject &metrics);
 private:
     QPointer<QSslSocket> m_socket;
     QPointer<Wire> m_wire;
@@ -98,4 +113,9 @@ private:
     DesktopDecoder m_desktopDecoder;
     bool m_streamSupported=false;
     StreamSettings m_stream;
+    std::unique_ptr<VideoDecoder> m_videoDecoder;
+    quint32 m_videoSequence=0;
+    quint64 m_ackId=0;
+    QImage m_cursorImage;
+    QPoint m_cursorHotspot;
 };
