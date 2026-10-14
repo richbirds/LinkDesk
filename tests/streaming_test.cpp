@@ -1,5 +1,6 @@
 #include "streamscheduler.h"
 #include "videocodec.h"
+#include <QElapsedTimer>
 #include <QTest>
 class StreamingTest : public QObject {
     Q_OBJECT
