@@ -10,10 +10,15 @@
 #include <QtConcurrent>
 #include <QtEndian>
 
-static QByteArray digestFile(const QString &path) {
+static QByteArray digestFile(const QString &path,const std::shared_ptr<std::atomic_bool> &cancel) {
     QFile f(path); if(!f.open(QIODevice::ReadOnly)) return {};
     QCryptographicHash hash(QCryptographicHash::Sha256);
-    if(!hash.addData(&f)) return {}; return hash.result().toHex();
+    while(!f.atEnd()) {
+        if(cancel->load(std::memory_order_relaxed)) return {};
+        const auto block=f.read(256*1024);if(block.isEmpty() && f.error()!=QFileDevice::NoError)return {};
+        hash.addData(block);
+    }
+    return cancel->load(std::memory_order_relaxed) ? QByteArray() : hash.result().toHex();
 }
 QString FileTransfer::receiveDirectory() {
     return QSettings().value("files/receiveDirectory",QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)).toString();
@@ -22,7 +27,15 @@ FileTransfer::FileTransfer(QObject *parent):QObject(parent) {
     m_pump.setInterval(10); connect(&m_pump,&QTimer::timeout,this,&FileTransfer::pump); m_pump.start();
     m_retry.setInterval(15000); connect(&m_retry,&QTimer::timeout,this,[this]{if(!m_ready) offer();});m_retry.start();
 }
+FileTransfer::~FileTransfer() {shutdown();}
+void FileTransfer::shutdown() {
+    if(m_stopped) return;m_stopped=true;
+    cancel();if(m_receiveCancel)m_receiveCancel->store(true);
+    m_pump.stop();m_retry.stop();if(m_part.isOpen())m_part.flush();m_part.close();
+    if(m_wire) disconnect(m_wire,nullptr,this,nullptr);m_wire.clear();
+}
 void FileTransfer::attach(Wire *wire) {
+    if(m_stopped) return;
     if(m_wire) disconnect(m_wire,nullptr,this,nullptr);
     m_wire=wire; m_ready=false; m_source.close(); m_part.close();m_inId.clear();
     if(!wire) return;
@@ -30,15 +43,17 @@ void FileTransfer::attach(Wire *wire) {
     connect(wire,&Wire::fileReceived,this,&FileTransfer::chunk);
     offer();next();
 }
-void FileTransfer::cancel() {++m_generation;m_queue.clear();m_source.close();m_id.clear();m_ready=false;m_preparing=false;}
+void FileTransfer::cancel() {if(m_sendCancel)m_sendCancel->store(true);++m_generation;m_queue.clear();m_source.close();m_id.clear();m_ready=false;m_preparing=false;}
 void FileTransfer::enqueue(const QStringList &paths) {
+    if(m_stopped)return;
     for(const auto &path:paths) { const QFileInfo f(path); if(f.isFile() && !f.isSymLink()) m_queue.enqueue(f.absoluteFilePath()); }
     next();
 }
 void FileTransfer::next() {
-    if(m_preparing || !m_id.isEmpty() || m_queue.isEmpty()) return;
+    if(m_stopped || m_preparing || !m_id.isEmpty() || m_queue.isEmpty()) return;
     const QString path=m_queue.dequeue();const auto generation=m_generation; m_preparing=true;
     emit progress(QFileInfo(path).fileName(),0,QFileInfo(path).size(),"正在校验文件…");
+    m_sendCancel=std::make_shared<std::atomic_bool>(false);
     auto watcher=new QFutureWatcher<QByteArray>(this);
     connect(watcher,&QFutureWatcher<QByteArray>::finished,this,[this,watcher,path,generation]{
         if(generation!=m_generation) {watcher->deleteLater();return;}
@@ -47,7 +62,7 @@ void FileTransfer::next() {
         m_hash=QString::fromLatin1(hash);m_name=QFileInfo(path).fileName();m_size=QFileInfo(path).size();
         m_id=QString::fromLatin1(QCryptographicHash::hash(hash+m_name.toUtf8(),QCryptographicHash::Sha256).toHex());
         m_source.setFileName(path); m_ack=m_sent=0;offer();
-    });watcher->setFuture(QtConcurrent::run(digestFile,path));
+    });watcher->setFuture(QtConcurrent::run(digestFile,path,m_sendCancel));
 }
 void FileTransfer::offer() {
     if(!m_wire || m_id.isEmpty()) return;
@@ -61,6 +76,7 @@ void FileTransfer::reply(const QString &type,qint64 offset,const QString &error)
     if(m_wire) m_wire->sendJson({{"type",type},{"id",m_inId},{"offset",QString::number(offset)},{"message",error}});
 }
 void FileTransfer::message(const QJsonObject &j) {
+    if(m_stopped)return;
     const auto type=j["type"].toString(), id=j["id"].toString();
     if(type=="file_offer") {
         if(m_finishing) return;
@@ -99,8 +115,10 @@ void FileTransfer::message(const QJsonObject &j) {
     if(type=="file_finish" && id==m_inId && m_part.isOpen() && !m_finishing) {
         if(m_part.pos()!=m_inSize || !m_part.flush()) {reply("file_error",0,"文件长度或磁盘写入异常");m_part.close();return;}
         const QString partial=m_part.fileName();m_part.close();m_finishing=true;
+        m_receiveCancel=std::make_shared<std::atomic_bool>(false);
         auto watcher=new QFutureWatcher<QByteArray>(this);
         connect(watcher,&QFutureWatcher<QByteArray>::finished,this,[this,watcher,partial]{
+            if(m_stopped){watcher->deleteLater();return;}
             const auto hash=watcher->result();watcher->deleteLater();m_finishing=false;
             if(hash!=m_inHash.toLatin1()) {QFile::remove(partial);reply("file_error",0,"完整性校验失败，请重新发送");return;}
             const QFileInfo original(m_inName);QString destination;
@@ -110,7 +128,7 @@ void FileTransfer::message(const QJsonObject &j) {
                 if(QFile::rename(partial,destination)) {reply("file_done",m_inSize);emit received(destination);return;}
                 if(!QFileInfo::exists(destination)) break;
             }reply("file_error",0,"无法保存文件，接收目录可能已满");
-        });watcher->setFuture(QtConcurrent::run(digestFile,partial));
+        });watcher->setFuture(QtConcurrent::run(digestFile,partial,m_receiveCancel));
     }
 }
 void FileTransfer::pump() {
@@ -128,7 +146,7 @@ void FileTransfer::pump() {
     }
 }
 void FileTransfer::chunk(const QByteArray &data) {
-    if(!m_part.isOpen() || data.size()<=72 || data.size()>32840 || data.left(64)!=m_inId.toLatin1()) return;
+    if(m_stopped || !m_part.isOpen() || data.size()<=72 || data.size()>32840 || data.left(64)!=m_inId.toLatin1()) return;
     const quint64 offset=qFromBigEndian<quint64>(data.constData()+64);const auto payload=data.mid(72);
     if(offset!=quint64(m_part.pos()) || offset+payload.size()>quint64(m_inSize)) {reply("file_error",0,"文件偏移异常");m_part.close();return;}
     if(m_part.write(payload)!=payload.size() || !m_part.flush()) {reply("file_error",0,"磁盘写入失败");m_part.close();return;}

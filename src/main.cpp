@@ -15,7 +15,7 @@ int main(int argc,char **argv) {
     QApplication app(argc,argv);
     app.setStyle("Fusion");
     app.setWindowIcon(QIcon(":/brand/linkdesk.png"));
-    app.setOrganizationName("LinkDesk"); app.setApplicationName("LinkDesk"); app.setApplicationVersion("0.8.0");
+    app.setOrganizationName("LinkDesk"); app.setApplicationName("LinkDesk"); app.setApplicationVersion("0.9.0");
     const auto args=app.arguments();
     const int index=args.indexOf("--screenshot");
     const bool preview=index>=0 && index+1<args.size();
@@ -34,8 +34,7 @@ int main(int argc,char **argv) {
         QString error;
         const auto result=instance.acquire([&] {
             if(!primary) return;
-            if(primary->isMinimized()) primary->showNormal();else primary->show();
-            primary->raise();primary->activateWindow();
+            primary->restoreFromTray();
         },&error);
         if(result==SingleInstance::AlreadyRunning) return 0;
         if(result==SingleInstance::Failed) { QMessageBox::critical(nullptr,"LinkDesk 启动失败",error);return 1; }

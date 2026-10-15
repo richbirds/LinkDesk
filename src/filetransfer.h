@@ -5,12 +5,16 @@
 #include <QTimer>
 #include <QQueue>
 #include <QJsonObject>
+#include <atomic>
+#include <memory>
 class Wire;
 // One bounded outgoing stream per peer; unfinished incoming parts survive reconnects.
 class FileTransfer : public QObject {
     Q_OBJECT
 public:
     explicit FileTransfer(QObject *parent=nullptr);
+    ~FileTransfer() override;
+    void shutdown();
     void attach(Wire *wire);
     void cancel();
     void enqueue(const QStringList &paths);
@@ -19,6 +23,8 @@ signals:
     void progress(const QString &name,qint64 done,qint64 total,const QString &state);
     void received(const QString &path);
 private:
+    std::shared_ptr<std::atomic_bool> m_sendCancel,m_receiveCancel;
+    bool m_stopped=false;
     QPointer<Wire> m_wire;
     QQueue<QString> m_queue;
     QFile m_source,m_part;

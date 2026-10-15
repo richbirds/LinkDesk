@@ -1,6 +1,10 @@
 #include "mainwindow.h"
 #include "adminpassword.h"
 #include "systemsettings.h"
+#include "exitdeadline.h"
+#include <QSystemTrayIcon>
+#include <QMenu>
+#include <QSettings>
 #include "viewer.h"
 #include "connectionlist.h"
 #include "platform.h"
@@ -68,6 +72,18 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_rel
         prompt->setTextFormat(Qt::PlainText);prompt->setAttribute(Qt::WA_DeleteOnClose);prompt->setWindowModality(Qt::NonModal);
         connect(prompt,&QMessageBox::finished,this,[path](int answer){if(answer==QMessageBox::Yes)QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));});prompt->show();
     });
+    qApp->installEventFilter(this);
+    if(!qApp->property("linkdesk.previewMode").toBool()) {
+        qApp->setQuitOnLastWindowClosed(false);
+        auto icon=QIcon(":/brand/linkdesk.png");if(icon.isNull())icon=style()->standardIcon(QStyle::SP_ComputerIcon);
+        m_tray=new QSystemTrayIcon(icon,this);m_tray->setObjectName("linkdeskTray");m_tray->setToolTip("LinkDesk · 远程桌面");
+        auto menu=new QMenu(this);auto restore=menu->addAction("显示界面");restore->setObjectName("trayShowAction");
+        menu->addSeparator();auto exit=menu->addAction("退出");exit->setObjectName("trayExitAction");
+        connect(restore,&QAction::triggered,this,&MainWindow::restoreFromTray);connect(exit,&QAction::triggered,this,&MainWindow::requestExit);
+        connect(m_tray,&QSystemTrayIcon::activated,this,[this](QSystemTrayIcon::ActivationReason reason){if(reason==QSystemTrayIcon::Trigger || reason==QSystemTrayIcon::DoubleClick)restoreFromTray();});
+        m_tray->setContextMenu(menu);m_tray->show();
+    }
+    connect(qApp,&QCoreApplication::aboutToQuit,this,[this]{beginExit();});
     QSettings adminSettings; AdminPassword::initialize(adminSettings);
     setWindowTitle("LinkDesk · 远程桌面"); resize(1080,740); setMinimumSize(860,560);
     setStyleSheet(R"(
@@ -103,6 +119,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_rel
     auto help=new QPushButton("◎   使用指南"); nav->addWidget(help);
     auto serverSettings=new QPushButton("◇   软件设置"); serverSettings->setObjectName("softwareSettingsButton"); nav->addWidget(serverSettings);
     connect(serverSettings,&QPushButton::clicked,this,&MainWindow::configureServer);
+    auto exit=new QPushButton("⏻   完全退出");exit->setObjectName("completeExitButton");nav->addWidget(exit);
+    connect(exit,&QPushButton::clicked,this,&MainWindow::requestExit);
     nav->addStretch(); nav->addWidget(label("C++ / Qt 6\n互联网中继 · v"+QCoreApplication::applicationVersion(),"muted")); row->addWidget(sidebar);
     connect(help,&QPushButton::clicked,this,[this] {
         QMessageBox::information(this,"使用指南",
@@ -285,12 +303,61 @@ void MainWindow::connectRemote() {
     else m_password->clear();
     m_connect->setEnabled(true); m_connect->setText("断开远程连接");
 }
-void MainWindow::closeEvent(QCloseEvent *event) {
-    m_list->stopAll(); m_relay.stop(); m_host.stop();
-    event->accept();
-    // Remote windows/dialogs can keep Qt's last-window auto-quit condition false.
-    // Closing the application's main window always means a complete shutdown.
+MainWindow::~MainWindow() {
+    qApp->removeEventFilter(this);
+    for(auto transfer:findChildren<FileTransfer *>()) transfer->shutdown();
+    m_list->stopAll();m_relay.stop();m_host.stop();
+}
+bool MainWindow::eventFilter(QObject *object,QEvent *event) {
+    if(object==qApp && event->type()==QEvent::Quit && !m_exiting && !qApp->property("linkdesk.previewMode").toBool()) {
+        requestExit();return true;
+    }
+    return QMainWindow::eventFilter(object,event);
+}
+void MainWindow::hideToTray() {
+    if(m_inTray) return;
+    m_inTray=true;m_savedState=windowState() & ~Qt::WindowMinimized;m_hiddenWindows.clear();
+    for(auto widget:QApplication::topLevelWidgets()) if(widget!=this && isAncestorOf(widget) && widget->isVisible() && !widget->isMinimized() && !qobject_cast<QMenu *>(widget)) {
+        for(auto canvas:widget->findChildren<RemoteCanvas *>()) canvas->releaseInput();
+        m_hiddenWindows.append(widget);widget->hide();
+    }
+    hide();
+}
+void MainWindow::restoreFromTray() {
+    if(m_exiting) return;
+    if(m_inTray) {setWindowState(m_savedState);m_inTray=false;}
+    else if(isMinimized()) setWindowState(windowState() & ~Qt::WindowMinimized);
+    show();raise();activateWindow();
+    for(const auto &window:m_hiddenWindows) if(window) {
+        auto canvas=window->findChild<RemoteCanvas *>();
+        if(!canvas || canvas->property("encodedFrameSize").toSize().isValid()) window->show();
+    }
+    m_hiddenWindows.clear();
+}
+void MainWindow::requestExit() {
+    if(m_exiting || m_confirmingExit) return;
+    m_confirmingExit=true;
+    QMessageBox confirm(QMessageBox::Question,"完全退出 LinkDesk","退出将结束所有远程连接、共享和文件传输。确定完全退出？",QMessageBox::Yes|QMessageBox::No,this);
+    confirm.setObjectName("exitConfirmation");confirm.setDefaultButton(QMessageBox::No);
+    confirm.button(QMessageBox::Yes)->setText("完全退出");confirm.button(QMessageBox::No)->setText("取消");
+    const bool accepted=confirm.exec()==QMessageBox::Yes;m_confirmingExit=false;
+    if(accepted) beginExit();
+}
+void MainWindow::beginExit() {
+    if(m_exiting) return;
+    m_exiting=true;
+    if(!qApp->property("linkdesk.previewMode").toBool()) startExitDeadline();
+    // Stop producers before disconnecting transports. Hash workers cooperate
+    // with cancellation and retain flushed receiver partials for resuming.
+    for(auto transfer:findChildren<FileTransfer *>()) transfer->shutdown();
+    QSettings().sync();
+    m_list->stopAll();m_relay.stop();m_host.stop();
+    if(m_tray) m_tray->hide();
     QCoreApplication::quit();
+}
+void MainWindow::closeEvent(QCloseEvent *event) {
+    if(m_exiting || qApp->property("linkdesk.previewMode").toBool()) {event->accept();beginExit();return;}
+    event->ignore();hideToTray();
 }
 void MainWindow::startConfiguredServer() {
     auto config=readConfig(); if (!config.valid()) return;

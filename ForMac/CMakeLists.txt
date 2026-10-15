@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS version")
-project(LinkDesk VERSION 0.8.0 LANGUAGES CXX)
+project(LinkDesk VERSION 0.9.0 LANGUAGES CXX)
 if(NOT APPLE)
     message(FATAL_ERROR "Use ForMac on its matching operating system")
 endif()

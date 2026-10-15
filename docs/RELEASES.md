@@ -1,5 +1,13 @@
 # Versions and publishing
 
+## v0.9.0
+
+Closing the main window now keeps connections running in the macOS menu-bar tray or Windows notification area. Tray Show restores the previous page, window state and owned windows. Tray Exit, the sidebar Complete Exit button and application quit requests use the same default-cancel confirmation. A second launch restores a hidden instance.
+
+File cards display acknowledged transfer throughput in B/s, KB/s or MB/s, sampled once per second; reconnects reset the sample baseline. Hash workers now check cancellation between bounded reads. Confirmed process exit cancels work, flushes partial files, stops transports and removes the tray icon. A process-wide eight-second fallback terminates only an already-confirmed exit if native capture/codec cleanup stalls; normal exit and the fallback have distinct exit codes. No individual Qt thread is forcibly terminated.
+
+Subprocess regression covers live TLS sessions, tray hide/restore, cancelled confirmation, explicit exit with an open viewer and file hashing, transfer-rate display, and simulated blocked cleanup. Actual user desktop sessions and file contents are excluded from public tests.
+
 ## v0.8.0
 
 Compact navigation and device cards for smaller displays. Controlled desktops use the responsive local cursor without a delayed duplicate; viewing mode still shows the remote cursor. Device context menus add file selection and confirmed restart/shutdown requests, requiring host control permission for power actions.

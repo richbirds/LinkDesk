@@ -98,6 +98,18 @@ public:
     QTimer retry,watch;
     QProgressBar *transferBar;
     QLabel *transferText;
+    QTimer transferRateTimer;
+    QElapsedTimer transferRateClock;
+    QString transferName,transferState;
+    qint64 transferDone=0,transferTotal=0,transferSample=0;
+    double transferRate=0;
+    void updateTransferText() {
+        QString speed;
+        if(transferState=="传送中" || transferState=="接收中") {
+            speed=" · "+(transferRate>=1024*1024 ? QString::number(transferRate/(1024*1024),'f',2)+" MB/s" : transferRate>=1024 ? QString::number(transferRate/1024,'f',1)+" KB/s" : QString::number(qMax(0.0,transferRate),'f',0)+" B/s");
+        }
+        transferText->setText(transferName+" · "+transferState+speed);
+    }
     DeviceCard(RelayAgent *relay,QWidget *parent):QFrame(parent),agent(relay),client(this) {
         setAcceptDrops(true);setObjectName("card"); setMinimumWidth(245); setMaximumWidth(600);
         auto layout=new QVBoxLayout(this); layout->setContentsMargins(10,10,10,10);layout->setSpacing(6);
@@ -106,11 +118,22 @@ public:
         caption=new QLabel; caption->setTextFormat(Qt::PlainText); caption->setWordWrap(true); caption->setStyleSheet("font-weight:600;font-size:16px;"); layout->addWidget(caption);
         status=new QLabel("未连接"); status->setTextFormat(Qt::PlainText); status->setWordWrap(true); status->setMinimumHeight(22); layout->addWidget(status);
         auto row=new QHBoxLayout; toggle=new QPushButton("连接"); auto modify=new QPushButton("修改"),remove=new QPushButton("删除"); row->addWidget(toggle); row->addWidget(modify); row->addWidget(remove); layout->addLayout(row);
-        transferText=new QLabel;transferText->setTextFormat(Qt::PlainText);transferText->setWordWrap(true);transferText->hide();layout->addWidget(transferText);
+        transferText=new QLabel;transferText->setObjectName("fileTransferStatus");transferText->setTextFormat(Qt::PlainText);transferText->setWordWrap(true);transferText->hide();layout->addWidget(transferText);
         transferBar=new QProgressBar;transferBar->setRange(0,1000);transferBar->setFixedHeight(14);transferBar->hide();layout->addWidget(transferBar);
         connect(&client,&RemoteClient::fileProgress,this,[this](const QString &name,qint64 done,qint64 total,const QString &state){
-            transferText->setText(name+" · "+state);transferText->show();transferBar->show();transferBar->setValue(total ? int(double(done)/total*1000) : 0);
+            const bool streaming=state=="传送中" || state=="接收中";
+            if(name!=transferName || (streaming && state!=transferState) || done<transferDone) {
+                transferRateClock.restart();transferSample=done;transferRate=0;
+            }
+            transferName=name;transferState=state;transferDone=done;transferTotal=total;
+            if(streaming) {if(!transferRateTimer.isActive())transferRateTimer.start();}else transferRateTimer.stop();
+            updateTransferText();transferText->show();transferBar->show();transferBar->setValue(total ? int(double(done)/total*1000) : 0);
             transferBar->setFormat(total ? QString::number(int(double(done)/total*100))+"%" : state);
+        });
+        transferRateTimer.setInterval(1000);
+        connect(&transferRateTimer,&QTimer::timeout,this,[this]{
+            const auto elapsed=transferRateClock.elapsed();if(elapsed<=0)return;
+            transferRate=qMax<qint64>(0,transferDone-transferSample)*1000.0/elapsed;transferSample=transferDone;transferRateClock.restart();updateTransferText();
         });
         connect(&client,&RemoteClient::powerResult,this,[this](const QString &message){QMessageBox::information(this,"远程电源操作",message);});
         viewer=new ViewerWindow(&client,this); viewer->setManaged(true); viewer->preview();
@@ -167,6 +190,7 @@ public:
     void updateCaption() { caption->setText(name==target || name=="设备 "+target ? target : name+" · "+target); setProperty("deviceId",target); preview->setObjectName("preview-"+target); }
     void setState(int state,const QString &text) { preview->state=state; preview->update(); status->setText(text); status->setToolTip(text); toggle->setText(wanted ? "断开" : "连接"); emit stateChanged(text,state,wanted); }
     void cleanup() {
+        transferRateTimer.stop();transferRate=0;if(transferState=="传送中") {transferState="连接中断，等待续传";updateTransferText();}
         ++generation; busy=false; auto old=channel; channel.clear();
         if(old) { if(auto tunnel=old->findChild<RelayTunnel *>()) tunnel->close(); old->deleteLater(); }
         client.disconnectPeer(); viewer->hide(); expanded=false;

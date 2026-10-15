@@ -1,7 +1,9 @@
 #pragma once
 #include <QMainWindow>
+#include <QPointer>
 #include "remote.h"
 #include "relay.h"
+class QSystemTrayIcon;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -13,9 +15,21 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit MainWindow(QWidget *parent=nullptr);
+    ~MainWindow() override;
+public slots:
+    void requestExit();
+    void restoreFromTray();
+protected:
+    bool eventFilter(QObject *,QEvent *) override;
 protected:
     void closeEvent(QCloseEvent *) override;
 private:
+    QSystemTrayIcon *m_tray=nullptr;
+    bool m_exiting=false,m_confirmingExit=false,m_inTray=false;
+    Qt::WindowStates m_savedState;
+    QList<QPointer<QWidget>> m_hiddenWindows;
+    void hideToTray();
+    void beginExit();
     RemoteHost m_host;
     RelayAgent m_relay;
     ConnectionList *m_list;
