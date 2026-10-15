@@ -18,7 +18,7 @@ QByteArray Wire::packet(Type type, const QByteArray &payload) {
 }
 bool Wire::send(Type type, const QByteArray &payload) {
     if (!m_socket || !m_socket->isEncrypted() || payload.isEmpty()) return false;
-    if (payload.size() > (type == Json ? MaxJson : MaxFrame)) return false;
+    if (payload.size() > (type == Json ? MaxJson : type == File ? 32840 : MaxFrame)) return false;
     // Drop old captures when the connection is slow instead of accumulating frames.
     if (type != Json && m_socket->bytesToWrite() > 256 * 1024) return false;
     if (m_socket->bytesToWrite() > MaxFrame + 65536) {
@@ -32,6 +32,7 @@ bool Wire::send(Type type, const QByteArray &payload) {
 bool Wire::sendJson(const QJsonObject &json) { return send(Json, QJsonDocument(json).toJson(QJsonDocument::Compact)); }
 bool Wire::sendFrame(const QByteArray &jpeg) { return send(Frame, jpeg); }
 bool Wire::sendDesktop(const QByteArray &data) { return send(Desktop,data); }
+bool Wire::sendFile(const QByteArray &data) { return data.size()<=32840 && send(File,data); }
 bool Wire::sendVideo(const QByteArray &data) { return send(Video,data); }
 bool Wire::visualWritable() const { return m_socket && m_socket->isEncrypted() && m_socket->bytesToWrite()<=256*1024; }
 void Wire::feed(const QByteArray &bytes) {
@@ -49,13 +50,14 @@ void Wire::feed(const QByteArray &bytes) {
     while (m_buffer.size() >= 5 && !m_failed) {
         auto type = quint8(m_buffer[0]);
         auto length = qFromBigEndian<quint32>(m_buffer.constData() + 1);
-        if ((type != Json && type != Frame && type != Desktop && type != Video) || length == 0 || length > (type == Json ? MaxJson : MaxFrame)) {
+        if ((type != Json && type != Frame && type != Desktop && type != Video && type != File) || length == 0 || length > (type == Json ? MaxJson : type == File ? 32840 : MaxFrame)) {
             fail(QStringLiteral("无效的数据包类型或长度")); return;
         }
         if (m_buffer.size() < qsizetype(length) + 5) return;
         auto payload = m_buffer.mid(5, length);
         m_buffer.remove(0, length + 5);
-        if (type == Frame) emit frameReceived(payload);
+        if (type == File) emit fileReceived(payload);
+        else if (type == Frame) emit frameReceived(payload);
         else if(type == Desktop) emit desktopReceived(payload);
         else if(type == Video) emit videoReceived(payload);
         else {

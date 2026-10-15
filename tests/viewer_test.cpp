@@ -22,6 +22,14 @@ private slots:
         QCoreApplication::setOrganizationName("LinkDeskTests"); QCoreApplication::setApplicationName("LinkDeskViewerTests");
         QSettings().clear();
     }
+    void controlledCursorDoesNotTrailLocalCursor() {
+        RemoteCanvas canvas;canvas.resize(640,360);canvas.setFrame(picture());
+        QImage cursor(16,16,QImage::Format_ARGB32);cursor.fill(Qt::green);
+        canvas.setRemoteCursor(cursor,{},QPointF(.5,.5),true);canvas.show();
+        canvas.setControl(false);QCOMPARE(canvas.grab().toImage().pixelColor(322,182),QColor(Qt::green));
+        canvas.setControl(true);QCOMPARE(canvas.grab().toImage().pixelColor(322,182),QColor(Qt::white));
+        canvas.setControl(false);QCOMPARE(canvas.grab().toImage().pixelColor(322,182),QColor(Qt::green));
+    }
     void transientHideAndFullscreenKeepInputAndFullQuality() {
         RemoteClient client; ViewerWindow viewer(&client); viewer.setManaged(true); viewer.preview(); viewer.begin("test",true);
         auto canvas=viewer.findChild<RemoteCanvas *>(); QVERIFY(canvas); canvas->setFrame(picture()); clickable(canvas);

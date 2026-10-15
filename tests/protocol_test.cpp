@@ -20,6 +20,7 @@ private slots:
     void oversized_data() {
         QTest::addColumn<int>("type"); QTest::addColumn<quint32>("length");
         QTest::newRow("json") << 1 << quint32(Wire::MaxJson+1);
+        QTest::newRow("file") << 5 << quint32(32841);
         QTest::newRow("desktop") << 3 << quint32(Wire::MaxFrame+1);
         QTest::newRow("image") << 2 << quint32(Wire::MaxFrame+1);
         QTest::newRow("unknown-type") << 9 << quint32(1);

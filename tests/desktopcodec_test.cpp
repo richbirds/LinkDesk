@@ -4,6 +4,16 @@
 class DesktopCodecTest : public QObject {
     Q_OBJECT
 private slots:
+    void nativeUnchangedReferenceHasAHeartbeat() {
+        DesktopEncoder encoder;DesktopDecoder decoder;
+        QVERIFY(encoder.repeatReference().isEmpty());
+        QImage source(640,360,QImage::Format_RGB32);source.fill(Qt::green);
+        const auto key=encoder.encode(source,90,true);encoder.commit();
+        QImage image;bool changed=false;QString error;
+        QVERIFY(decoder.decode(key,&image,&changed,&error));QVERIFY(changed);
+        const auto heartbeat=encoder.repeatReference();QCOMPARE(heartbeat.size(),19);
+        QVERIFY(decoder.decode(heartbeat,&image,&changed,&error));QVERIFY(!changed);QCOMPARE(image.size(),source.size());
+    }
     void scrollCopiesAndDroppedMetadata() {
         DesktopEncoder encoder;encoder.setOfficeOptimizations(true);DesktopDecoder decoder;
         QImage source(640,360,QImage::Format_RGB32);

@@ -11,6 +11,7 @@ public:
     bool needsRefinement() const { return m_office && m_referenceLossy; }
     void commit();
     void reset();
+    QByteArray repeatReference() const;
 private:
     QImage m_reference,m_candidate;
     quint32 m_sequence=0,m_candidateSequence=0;

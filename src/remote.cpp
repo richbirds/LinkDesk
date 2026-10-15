@@ -1,3 +1,4 @@
+#include "systemsettings.h"
 #include "remote.h"
 #include "protocol.h"
 #include <QApplication>
@@ -76,7 +77,7 @@ public:
         auto finish=[&](const QByteArray &bytes,const QString &error,bool encodedVideo=false) { emit ready(generation,bytes,error,timing.nsecsElapsed()/1000,capturedAt,encodedVideo); };
         if(frame.pending) { finish({},{});return; }
         if(image.isNull()) { finish({},"屏幕采集失败，请检查系统屏幕录制权限。"); return; }
-        if(office && !videoActive && frame.unchanged && frame.serial && frame.serial==committedSerial && !desktop.needsRefinement()) { finish({},{});return; }
+        if(office && !videoActive && frame.unchanged && frame.serial && frame.serial==committedSerial && !desktop.needsRefinement()) { finish(desktop.repeatReference(),{});return; }
         if(office && videoActive && committed==image) {
             if(capturedAt-lastChange<600) { finish({},{}); return; }
             pending=image;pendingSerial=frame.serial; frame.image=image; const auto bytes=desktop.encode(frame,settings.quality,true,capturedAt); finish(bytes,bytes.isEmpty() ? "文字修复编码失败。" : QString()); return;
@@ -255,6 +256,7 @@ void RemoteHost::accept(qintptr descriptor) {
     connect(wire,&Wire::invalidPacket,this,[this](const QString &s) { emit status(s); });
     connect(wire,&Wire::frameReceived,socket,[socket](const QByteArray &) { socket->abort(); });
     connect(wire,&Wire::videoReceived,socket,[socket](const QByteArray &) { socket->abort(); });
+    connect(wire,&Wire::fileReceived,socket,[socket,activity](const QByteArray &){ if(!socket->property("authenticated").toBool()) socket->abort();else activity->restart(); });
     connect(wire,&Wire::desktopReceived,socket,[socket](const QByteArray &) { socket->abort(); });
     connect(wire,&Wire::jsonReceived,this,[this,socket,wire,ip,activity](const QJsonObject &j) {
         if (!socket->isEncrypted()) { socket->abort(); return; }
@@ -277,6 +279,9 @@ void RemoteHost::accept(qintptr descriptor) {
             if (m_peer) { reject("此设备已有远程会话，请稍后重试。"); return; }
             socket->setProperty("authenticated",true); activity->restart();
             m_peer = socket; m_wire = wire;
+            auto files=new FileTransfer(wire);files->attach(wire);
+            connect(files,&FileTransfer::received,this,&RemoteHost::fileReceived);
+            connect(files,&FileTransfer::progress,this,&RemoteHost::fileProgress);
             ++m_captureGeneration; m_encoding=false; m_lastCapture=-10000;
             m_frameClock.start(); m_pendingFrames.clear(); m_scheduler.reset();m_transportBytes=0;m_frameId=0;m_lastMetrics=0;m_cursorShape.clear();m_lastCursor={}; m_stream=StreamSettings(); m_capture.setInterval(1000/m_stream.fps);
             m_videoFrames=0;m_videoFallbacks=0;
@@ -291,7 +296,7 @@ void RemoteHost::accept(qintptr descriptor) {
             auto screen = QGuiApplication::primaryScreen();
             m_geometry = screen ? Platform::screenGeometry(screen) : QRect(0,0,1280,720);
             wire->sendJson({{"type","welcome"},{"version",1},{"name",QHostInfo::localHostName()},
-                {"control",m_control},{"streamOptions",true},{"width",m_geometry.width()},{"height",m_geometry.height()}});
+                {"files",true},{"control",m_control},{"streamOptions",true},{"width",m_geometry.width()},{"height",m_geometry.height()}});
             m_capture.start(); m_heartbeat.start(); capture();
             emit peerChanged(true,ip); emit status("远程设备已连接 · " + ip); return;
         }
@@ -310,18 +315,26 @@ void RemoteHost::accept(qintptr descriptor) {
             m_capture.setInterval(qMax(1,1000/m_stream.fps));
             wire->sendJson({{"type","stream_settings_applied"},{"settings",m_stream.json()}});
         }
+        else if(type=="power_request" && m_peer==socket) {
+            QString error;const auto action=j.value("action").toString();
+            const bool ok=m_control && !m_testMode && SystemSettings::power(action,&error);
+            wire->sendJson({{"type","power_result"},{"message",ok ? "电源指令已提交" : (error.isEmpty()?"受控端未授权鼠标键盘控制":error)}});
+        }
         else if (type == "input" && m_peer == socket && m_control) m_input.apply(j,m_geometry);
     });
     socket->setSocketOption(QAbstractSocket::LowDelayOption,1);
     socket->startServerEncryption();
 }
 void RemoteHost::capture() {
-    if (!m_peer || !m_wire || m_encoding || m_peer->bytesToWrite() > 256*1024) return;
+    if (!m_peer || !m_wire) return;
     const auto now=m_frameClock.elapsed();
     if(now-m_lastMetrics>=1000) {
         auto metrics=streamingMetrics();metrics["socketQueueBytes"]=double(m_peer->bytesToWrite());
+        metrics["encoderBusy"]=m_encoding;metrics["captureAgeMs"]=double(now-m_lastCapture);
+        if(qEnvironmentVariableIsSet("LINKDESK_STREAM_TRACE")) qInfo().noquote()<<"Host metrics"<<QJsonDocument(metrics).toJson(QJsonDocument::Compact);
         emit streamMetrics(metrics);if(m_peer->property("frameMetrics").toBool()) { auto message=metrics;message["type"]="stream_metrics";m_wire->sendJson(message); }m_lastMetrics=now;
     }
+    if(m_encoding || m_peer->bytesToWrite()>256*1024) return;
     if(!m_testMode && m_stream.width>480 && m_stream.quality>30 && m_peer->property("cursorChannel").toBool()) {
         auto cursor=Platform::captureCursor(m_geometry);
         if(!cursor.image.isNull() && !m_geometry.isEmpty()) {
@@ -363,6 +376,7 @@ void RemoteHost::capture() {
 }
 
 RemoteClient::RemoteClient(QObject *parent) : QObject(parent) {
+    connect(&m_files,&FileTransfer::progress,this,&RemoteClient::fileProgress);
     m_timeout.setSingleShot(true);
     connect(&m_timeout,&QTimer::timeout,this,[this] { emit error("连接超时，请检查地址、共享状态和防火墙。"); disconnectPeer(); });
     m_heartbeat.setInterval(3000);
@@ -447,13 +461,18 @@ void RemoteClient::connectTo(const QString &host, quint16 port, const QString &c
         if (m_socket != socket) return;
         const auto type = j.value("type").toString();
         if (type == "welcome" && !m_trusting && j.value("version").toInt() == 1 && !m_active) {
-            m_active = true; m_streamSupported=j.value("streamOptions").toBool(); m_timeout.start(90000); m_heartbeat.start();
+            m_active = true; m_filesSupported=j.value("files").toBool();if(m_filesSupported) {
+                const auto peer=socket->peerCertificate().digest(QCryptographicHash::Sha256);
+                if(!property("files.peer").toByteArray().isEmpty() && property("files.peer").toByteArray()!=peer) m_files.cancel();
+                setProperty("files.peer",peer);m_files.attach(wire);
+            } m_streamSupported=j.value("streamOptions").toBool(); m_timeout.start(90000); m_heartbeat.start();
             setStreamSettings(m_stream);
             emit connected(j.value("name").toString(),j.value("control").toBool());
         } else if (type == "error") { emit error(j.value("message").toString()); disconnectPeer(); }
         else if (m_active) {
             m_timeout.start(90000);
-            if (type == "control") emit controlChanged(j.value("enabled").toBool());
+            if(type=="power_result") emit powerResult(j.value("message").toString());
+            else if (type == "control") emit controlChanged(j.value("enabled").toBool());
             else if(type=="frame_info") m_ackId=quint64(j.value("id").toDouble());
             else if(type=="stream_metrics") emit streamMetrics(j);
             else if(type=="cursor") {
@@ -498,6 +517,8 @@ void RemoteClient::disconnectPeer() {
         socket->abort(); socket->deleteLater(); emit disconnected();
     }
 }
+void RemoteClient::sendFiles(const QStringList &paths) { if(!m_active || !m_filesSupported) { emit fileProgress({},0,0,"请先连接支持文件传输的新版客户端");return; } m_files.enqueue(paths); }
+void RemoteClient::requestPower(const QString &action) { if(m_active && m_wire) m_wire->sendJson({{"type","power_request"},{"action",action}}); }
 void RemoteClient::sendInput(const QJsonObject &event) {
     if (!m_active || !m_wire) return;
     auto j = event; j["type"]="input"; m_wire->sendJson(j);

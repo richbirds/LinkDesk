@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "adminpassword.h"
+#include "systemsettings.h"
 #include "viewer.h"
 #include "connectionlist.h"
 #include "platform.h"
@@ -44,7 +45,7 @@ static QLabel *label(const QString &text,const char *style=nullptr) {
 }
 static QFrame *card(QVBoxLayout **layout) {
     auto frame=new QFrame; frame->setObjectName("card"); *layout=new QVBoxLayout(frame);
-    (*layout)->setContentsMargins(26,26,26,26); (*layout)->setSpacing(16); return frame;
+    (*layout)->setContentsMargins(16,14,16,14); (*layout)->setSpacing(9); return frame;
 }
 static QString configPath() {
     return QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)+"/relay-config.json";
@@ -62,17 +63,22 @@ static RelayConfig readConfig() {
     return parseConfig(QJsonDocument::fromJson(file.readAll()).object());
 }
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_relay(this) {
+    connect(&m_host,&RemoteHost::fileReceived,this,[this](const QString &path){
+        auto prompt=new QMessageBox(QMessageBox::Information,"文件接收完成",QFileInfo(path).fileName()+" 已保存。是否打开所在文件夹？",QMessageBox::Yes|QMessageBox::No,this);
+        prompt->setTextFormat(Qt::PlainText);prompt->setAttribute(Qt::WA_DeleteOnClose);prompt->setWindowModality(Qt::NonModal);
+        connect(prompt,&QMessageBox::finished,this,[path](int answer){if(answer==QMessageBox::Yes)QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));});prompt->show();
+    });
     QSettings adminSettings; AdminPassword::initialize(adminSettings);
-    setWindowTitle("LinkDesk · 远程桌面"); resize(1150,940); setMinimumSize(980,700);
+    setWindowTitle("LinkDesk · 远程桌面"); resize(1080,740); setMinimumSize(860,560);
     setStyleSheet(R"(
       QMainWindow, QWidget#content { background:#f3f6fb; }
-      QWidget { font-family:'PingFang SC','Microsoft YaHei',sans-serif; font-size:14px; color:#24324b; }
+      QWidget { font-family:'PingFang SC','Microsoft YaHei',sans-serif; font-size:13px; color:#24324b; }
       QFrame#sidebar { background:#101b32; border:0; }
       #sidebar QLabel { color:#9caecb; } #sidebar QLabel#brand {color:white;font-size:25px;font-weight:700;}
-      #sidebar QPushButton {text-align:left; background:transparent;color:#a9b9d2;border:0;padding:14px 18px;border-radius:10px;}
+      #sidebar QPushButton {text-align:left; background:transparent;color:#a9b9d2;border:0;padding:9px 18px;border-radius:10px;}
       #sidebar QPushButton#navActive {background:#263e67;color:#fff;font-weight:600;}
       QFrame#card {background:white;border:1px solid #e5ebf4;border-radius:16px;}
-      QLabel#title {font-size:29px;font-weight:700;color:#15243e;}
+      QLabel#title {font-size:24px;font-weight:700;color:#15243e;}
       QLabel#section {font-size:20px;font-weight:650;color:#15243e;}
       QLabel#muted {color:#8290a6;font-size:13px;}
       QLabel#bigCode {font-size:34px;font-weight:700;color:#2464e9;letter-spacing:5px;}
@@ -82,22 +88,22 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_rel
       QLineEdit:focus, QSpinBox:focus {border:1px solid #2865e8;background:white;}
       QPushButton {background:#edf2fa;border:0;border-radius:9px;padding:8px 16px;min-height:20px;color:#385274;font-weight:600;}
       QPushButton:hover {background:#e1eafa;} QPushButton:disabled {background:#edf0f5;color:#a3adbd;}
-      QPushButton#primary {background:#2865e8;color:white;padding:14px;font-size:15px;}
+      QPushButton#primary {background:#2865e8;color:white;padding:9px;font-size:15px;}
       QPushButton#primary:hover {background:#1b53d0;} QPushButton#primary:disabled {background:#adc3ef;}
       QPushButton#danger {background:#fff0ef;color:#be4b48;}
       QCheckBox {spacing:9px;} QCheckBox::indicator {width:18px;height:18px;}
       QLabel#banner {background:#eaf1ff;border:1px solid #d9e5ff;border-radius:10px;color:#426392;padding:13px;}
     )");
     auto root=new QWidget; auto row=new QHBoxLayout(root); row->setContentsMargins(0,0,0,0); row->setSpacing(0); setCentralWidget(root);
-    auto sidebar=new QFrame; sidebar->setObjectName("sidebar"); sidebar->setFixedWidth(206);
-    auto nav=new QVBoxLayout(sidebar); nav->setContentsMargins(22,30,22,26); nav->setSpacing(12);
-    nav->addWidget(label("▣  LinkDesk","brand")); nav->addWidget(label("连接，让距离更近","muted")); nav->addSpacing(38);
+    auto sidebar=new QFrame; sidebar->setObjectName("sidebar"); sidebar->setFixedWidth(180);
+    auto nav=new QVBoxLayout(sidebar); nav->setContentsMargins(16,18,16,12); nav->setSpacing(8);
+    nav->addWidget(label("▣  LinkDesk","brand")); nav->addWidget(label("连接，让距离更近","muted")); nav->addSpacing(18);
     auto remote=new QPushButton("◈   远程连接"); remote->setObjectName("navActive"); nav->addWidget(remote);
     auto listButton=new QPushButton("▦   连接列表"); nav->addWidget(listButton);
     auto help=new QPushButton("◎   使用指南"); nav->addWidget(help);
     auto serverSettings=new QPushButton("◇   软件设置"); serverSettings->setObjectName("softwareSettingsButton"); nav->addWidget(serverSettings);
     connect(serverSettings,&QPushButton::clicked,this,&MainWindow::configureServer);
-    nav->addStretch(); nav->addWidget(label("C++ / Qt 6\n互联网中继 · v0.7.1","muted")); row->addWidget(sidebar);
+    nav->addStretch(); nav->addWidget(label("C++ / Qt 6\n互联网中继 · v"+QCoreApplication::applicationVersion(),"muted")); row->addWidget(sidebar);
     connect(help,&QPushButton::clicked,this,[this] {
         QMessageBox::information(this,"使用指南",
           "1. 两台电脑打开软件；预配置版本会自动连接服务器。\n"
@@ -107,10 +113,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_rel
           "5. 被控端开启鼠标键盘控制后才接受操作。\n\n"
           + Platform::permissionHelp()+"\n" +
           "共享开关会记住，下次启动可自动共享。控制开关每次启动需主动开启。\n"
-          "支持主屏幕与常用英文按键，暂不支持中文输入法、文件传输或音频。\n"
+          "支持主屏幕与常用英文按键，支持拖放文件到连接列表缩略图；暂不支持中文输入法或音频。\n"
           "Ctrl+Shift+Esc 退出全屏，窗口模式下断开连接。");
     });
-    auto content=new QWidget; content->setObjectName("content"); content->setMinimumHeight(900);
+    auto content=new QWidget; content->setObjectName("content"); content->setMinimumHeight(620);
     auto scroll=new QScrollArea; scroll->setWidgetResizable(true); scroll->setFrameShape(QFrame::NoFrame);
     auto pages=new QStackedWidget; scroll->setWidget(content); pages->addWidget(scroll); row->addWidget(pages,1);
     m_list=new ConnectionList(&m_relay); pages->addWidget(m_list);
@@ -120,7 +126,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_rel
     };
     connect(remote,&QPushButton::clicked,this,[navigate]{navigate(0);});
     connect(listButton,&QPushButton::clicked,this,[navigate]{navigate(1);});
-    auto body=new QVBoxLayout(content); body->setContentsMargins(32,30,32,26); body->setSpacing(22);
+    auto body=new QVBoxLayout(content); body->setContentsMargins(18,16,18,16); body->setSpacing(12);
     auto header=new QHBoxLayout; auto titles=new QVBoxLayout;
     titles->addWidget(label("远程连接","title")); titles->addWidget(label("安全连接另一台电脑，或将此设备共享给对方。","muted"));
     header->addLayout(titles,1);
@@ -131,7 +137,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_rel
     local->addWidget(label("此设备","section")); local->addWidget(label(QHostInfo::localHostName(),"muted"));
     local->addSpacing(8); local->addWidget(label("本机设备 ID","muted"));
     m_address=label("尚未注册","address"); m_address->setMinimumHeight(40);
-    m_address->setStyleSheet("font-size:29px;font-weight:700;");
+    m_address->setStyleSheet("font-size:24px;font-weight:700;");
     m_address->setTextInteractionFlags(Qt::TextSelectableByMouse); local->addWidget(m_address);
     auto copy=new QPushButton("复制设备 ID"); copy->setMaximumWidth(140); local->addWidget(copy);
     connect(copy,&QPushButton::clicked,this,[this] {
@@ -141,7 +147,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_rel
     local->addWidget(label("连接密码","muted")); auto pinrow=new QHBoxLayout;
     m_code=label(m_host.code(),"bigCode"); m_code->setMinimumHeight(48); m_code->setWordWrap(true);
     m_code->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred);
-    m_code->setStyleSheet("font-size:29px;letter-spacing:2px;");
+    m_code->setStyleSheet("font-size:24px;letter-spacing:2px;");
     m_code->setTextInteractionFlags(Qt::TextSelectableByMouse); pinrow->addWidget(m_code,1);
     auto customize=new QPushButton("自定义"); pinrow->addWidget(customize);
     auto rotate=new QPushButton("刷新"); pinrow->addWidget(rotate); local->addLayout(pinrow);
@@ -244,7 +250,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_rel
     connect(&m_relay,&RelayAgent::status,this,[this](const QString &s) { message(s); });
     connect(&m_relay,&RelayAgent::error,this,[this](const QString &s) { message(s,true); });
     m_target->setText(QSettings().value("lastDeviceId").toString());
-    QTimer::singleShot(0,this,&MainWindow::startConfiguredServer);
+    if(!qApp->property("linkdesk.previewMode").toBool())
+        QTimer::singleShot(0,this,&MainWindow::startConfiguredServer);
 }
 void MainWindow::message(const QString &text,bool error) {
     m_banner->setText(text); m_banner->setStyleSheet(error ? "background:#fff1ee;color:#ad4944;border-color:#f5d5d0;" : "");
@@ -278,7 +285,13 @@ void MainWindow::connectRemote() {
     else m_password->clear();
     m_connect->setEnabled(true); m_connect->setText("断开远程连接");
 }
-void MainWindow::closeEvent(QCloseEvent *event) { m_list->stopAll(); m_relay.stop(); m_host.stop(); event->accept(); }
+void MainWindow::closeEvent(QCloseEvent *event) {
+    m_list->stopAll(); m_relay.stop(); m_host.stop();
+    event->accept();
+    // Remote windows/dialogs can keep Qt's last-window auto-quit condition false.
+    // Closing the application's main window always means a complete shutdown.
+    QCoreApplication::quit();
+}
 void MainWindow::startConfiguredServer() {
     auto config=readConfig(); if (!config.valid()) return;
     m_relay.start(config);
@@ -290,6 +303,11 @@ void MainWindow::configureServer() {
     auto network=new QWidget; auto networkLayout=new QVBoxLayout(network);
     auto forceRelay=new QCheckBox("强制走中转服务器（关闭局域网直连）"); forceRelay->setChecked(QSettings().value("network/forceRelay",false).toBool());
     networkLayout->addWidget(forceRelay); networkLayout->addWidget(label("应用于远程连接和连接列表中的全部电脑。保存后现有连接将重新建立。","muted")); networkLayout->addStretch(); tabs->addTab(network,"连接选项");
+    auto general=new QWidget;auto generalLayout=new QFormLayout(general);tabs->insertTab(0,general,"常规");tabs->setCurrentWidget(general);
+    auto autoStart=new QCheckBox("登录系统后自动启动 LinkDesk");autoStart->setChecked(SystemSettings::autoStartEnabled());generalLayout->addRow(autoStart);
+    auto receiveFolder=new QLineEdit(FileTransfer::receiveDirectory());auto chooseFolder=new QPushButton("选择…");auto folderRow=new QHBoxLayout;folderRow->addWidget(receiveFolder);folderRow->addWidget(chooseFolder);generalLayout->addRow("接收文件保存到",folderRow);
+    generalLayout->addRow(label("默认为系统下载目录。将文件拖到已连接的缩略图即可发送；中断后重新连接会自动续传。","muted"));
+    connect(chooseFolder,&QPushButton::clicked,&dialog,[&]{auto path=QFileDialog::getExistingDirectory(&dialog,"接收目录",receiveFolder->text());if(!path.isEmpty()) receiveFolder->setText(path);});
     auto serverPage=new QWidget; tabs->addTab(serverPage,"服务器设置");
     auto layout=new QVBoxLayout(serverPage); layout->setContentsMargins(24,24,24,24); layout->setSpacing(16);
     auto lockState=label("服务器设置已锁定，输入管理员密码后才能修改或导入配置。","muted"); layout->addWidget(lockState);
@@ -340,6 +358,11 @@ void MainWindow::configureServer() {
     buttons->button(QDialogButtonBox::Save)->setText("保存并应用"); buttons->button(QDialogButtonBox::Cancel)->setText("取消"); outer->addWidget(buttons);
     connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
     connect(buttons,&QDialogButtonBox::accepted,&dialog,[&] {
+        const QString folder=QDir::cleanPath(receiveFolder->text().trimmed());
+        if(!QDir::isAbsolutePath(folder) || !QDir().mkpath(folder) || !QFileInfo(folder).isWritable()) {QMessageBox::warning(&dialog,"保存失败","请选择可写入的接收目录。");return;}
+        QString startupError;
+        if(autoStart->isChecked()!=SystemSettings::autoStartEnabled() && !SystemSettings::setAutoStart(autoStart->isChecked(),&startupError)) {QMessageBox::warning(&dialog,"保存失败",startupError);return;}
+        QSettings().setValue("files/receiveDirectory",folder);
         RelayConfig chosen; chosen.host=host->text().trimmed(); chosen.port=quint16(port->value());
         chosen.fingerprint=RelayConfig::normalizePin(pin->text()); chosen.enrollmentKey=key->text(); QString error;
         const bool changed=chosen.host!=config.host || chosen.port!=config.port || chosen.fingerprint!=config.fingerprint || chosen.enrollmentKey!=config.enrollmentKey;

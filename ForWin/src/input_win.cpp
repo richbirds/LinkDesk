@@ -11,6 +11,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include "captionbuttons.h"
 
 bool InputController::available(QString *reason) const {
     Q_UNUSED(reason); return true;
@@ -62,6 +63,34 @@ void absoluteMouse(const QPoint &p,DWORD buttonFlag=0) {
 }
 void InputController::movePointer(const QPoint &p) { absoluteMouse(p); }
 void InputController::pointerButton(const QPoint &p,int code,bool down) {
+    if(code==1) {
+        auto captionAt=[&](HWND window) {
+            if(!window || !IsWindow(window)) return int(HTNOWHERE);
+            DWORD process=0; GetWindowThreadProcessId(window,&process);
+            if(process!=GetCurrentProcessId()) return int(HTNOWHERE);
+            return captionButtonAt(window,POINT{p.x(),p.y()});
+        };
+        if(!down && m_captionWindow) {
+            const HWND window=reinterpret_cast<HWND>(m_captionWindow);
+            const int hit=m_captionHit; m_captionWindow=0; m_captionHit=0;
+            const int actual=captionAt(window);
+            if(qEnvironmentVariableIsSet("LINKDESK_STREAM_TRACE")) qInfo("Remote caption release hit=%d actual=%d",hit,actual);
+            if(actual==hit) {
+                const WPARAM command=hit==HTMINBUTTON ? SC_MINIMIZE : hit==HTCLOSE ? SC_CLOSE
+                    : (IsZoomed(window) ? SC_RESTORE : SC_MAXIMIZE);
+                PostMessageW(window,WM_SYSCOMMAND,command,0);
+            }
+            return;
+        }
+        if(down) {
+            const HWND window=GetAncestor(WindowFromPoint(POINT{p.x(),p.y()}),GA_ROOT);
+            const int hit=captionAt(window);
+            if(qEnvironmentVariableIsSet("LINKDESK_STREAM_TRACE")) qInfo("Remote caption press hit=%d",hit);
+            if(hit==HTMINBUTTON || hit==HTMAXBUTTON || hit==HTCLOSE) {
+                m_captionWindow=reinterpret_cast<quintptr>(window); m_captionHit=hit; return;
+            }
+        }
+    }
     DWORD flag=code==1 ? (down?MOUSEEVENTF_LEFTDOWN:MOUSEEVENTF_LEFTUP)
         : code==2 ? (down?MOUSEEVENTF_RIGHTDOWN:MOUSEEVENTF_RIGHTUP)
         : (down?MOUSEEVENTF_MIDDLEDOWN:MOUSEEVENTF_MIDDLEUP);

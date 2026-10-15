@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(LinkDesk VERSION 0.7.1 LANGUAGES CXX)
+project(LinkDesk VERSION 0.8.0 LANGUAGES CXX)
 if(NOT WIN32)
     message(FATAL_ERROR "Use ForWin on its matching operating system")
 endif()

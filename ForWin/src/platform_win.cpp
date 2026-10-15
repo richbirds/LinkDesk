@@ -7,6 +7,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include "captionbuttons.h"
 #include <wincrypt.h>
 #include <ncrypt.h>
 #include <QSaveFile>
@@ -14,6 +15,8 @@
 #include <QScreen>
 #include <QCoreApplication>
 #include <QSslSocket>
+#include <QAbstractNativeEventFilter>
+#include <QDebug>
 
 namespace {
 QByteArray pem(const char *label,const QByteArray &der) {
@@ -159,7 +162,57 @@ CursorFrame Platform::captureCursor(const QRect &geometry) {
     result.image=shape; result.hotspot=hotspot; return result;
 }
 
-void Platform::initialize() { QSslSocket::setActiveBackend("schannel"); }
+namespace {
+// DefWindowProc tracks caption presses in a native modal loop. On Windows
+// that loop may starve the Qt socket/timer events needed to deliver a remote
+// mouse release, stopping both capture and heartbeat. Handle our caption
+// buttons at the native entry point, including VM/OS-injected mouse events.
+class CaptionButtons final : public QObject, public QAbstractNativeEventFilter {
+public:
+    explicit CaptionButtons(QObject *parent) : QObject(parent) {}
+    bool nativeEventFilter(const QByteArray &kind,void *raw,qintptr *result) override {
+        if(kind!="windows_generic_MSG") return false;
+        const MSG event=*static_cast<MSG *>(raw);
+        const auto msg=&event;
+        if((msg->message==WM_NCLBUTTONDOWN || msg->message==WM_NCLBUTTONDBLCLK)
+            && (msg->wParam==HTMINBUTTON || msg->wParam==HTMAXBUTTON || msg->wParam==HTCLOSE)) {
+            SetCapture(msg->hwnd); m_window=msg->hwnd; m_hit=int(msg->wParam);
+            if(qEnvironmentVariableIsSet("LINKDESK_STREAM_TRACE")) qInfo("Caption press hit=%d",m_hit);
+            if(result) *result=0; return true;
+        }
+        if(m_window && (msg->message==WM_LBUTTONUP || msg->message==WM_NCLBUTTONUP)) {
+            const auto window=m_window; const int hit=m_hit; m_window=nullptr;
+            if(GetCapture()==window) ReleaseCapture();
+            POINT point{short(LOWORD(msg->lParam)),short(HIWORD(msg->lParam))};
+            if(msg->message==WM_LBUTTONUP) ClientToScreen(msg->hwnd,&point);
+            const int actual=IsWindow(window) ? captionButtonAt(window,point) : HTNOWHERE;
+            if(qEnvironmentVariableIsSet("LINKDESK_STREAM_TRACE")) qInfo("Caption release hit=%d actual=%d",hit,actual);
+            if(actual==hit) {
+                const WPARAM command=hit==HTMINBUTTON ? SC_MINIMIZE : hit==HTCLOSE ? SC_CLOSE
+                    : (IsZoomed(window) ? SC_RESTORE : SC_MAXIMIZE);
+                PostMessageW(window,WM_SYSCOMMAND,command,0);
+            }
+            if(result) *result=0; return true;
+        }
+        if(msg->message==WM_CAPTURECHANGED || msg->message==WM_CANCELMODE) {
+            if(m_window && qEnvironmentVariableIsSet("LINKDESK_STREAM_TRACE")) qInfo("Caption cancelled message=%u",msg->message);
+            m_window=nullptr;
+        }
+        return false;
+    }
+private:
+    HWND m_window=nullptr;
+    int m_hit=0;
+};
+}
+void Platform::initialize() {
+    QSslSocket::setActiveBackend("schannel");
+    auto app=QCoreApplication::instance();
+    if(app && !app->property("linkdesk.captionButtons").toBool()) {
+        app->installNativeEventFilter(new CaptionButtons(app));
+        app->setProperty("linkdesk.captionButtons",true);
+    }
+}
 QString Platform::bundledConfigPath() { return QCoreApplication::applicationDirPath()+"/server.json"; }
 
 #include <QCryptographicHash>

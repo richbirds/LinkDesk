@@ -55,7 +55,7 @@ void RemoteCanvas::setFrame(const QByteArray &jpeg) {
     m_image=std::move(image); setProperty("encodedFrameSize",m_image.size()); update();
 }
 void RemoteCanvas::setImage(const QImage &image) { m_image=image; setProperty("encodedFrameSize",image.size()); update(); }
-void RemoteCanvas::setControl(bool enabled) { releaseInput(); m_control=enabled; }
+void RemoteCanvas::setControl(bool enabled) { releaseInput(); m_control=enabled; update(); }
 void RemoteCanvas::clearFrame() { releaseInput(); m_image=QImage();m_cursorVisible=false; setProperty("encodedFrameSize",QSize()); update(); }
 void RemoteCanvas::setRemoteCursor(const QImage &image,const QPoint &hotspot,const QPointF &position,bool visible) { m_cursorImage=image;m_cursorHotspot=hotspot;m_cursorPosition=position;m_cursorVisible=visible;update(); }
 void RemoteCanvas::releaseInput() {
@@ -66,7 +66,7 @@ void RemoteCanvas::paintEvent(QPaintEvent *) {
     QPainter p(this); p.fillRect(rect(),QColor("#0c1220"));
     if (m_image.isNull()) { p.setPen(QColor("#a5b1c5")); p.drawText(rect(),Qt::AlignCenter,"正在等待远程画面…"); }
     else { p.setRenderHint(QPainter::SmoothPixmapTransform); const auto bounds=imageRect();p.drawImage(bounds,m_image);
-        if(m_cursorVisible && !m_cursorImage.isNull()) { p.save();p.setClipRect(bounds);const double scale=bounds.width()/m_image.width(); const QPointF position(bounds.x()+m_cursorPosition.x()*bounds.width()-m_cursorHotspot.x()*scale,bounds.y()+m_cursorPosition.y()*bounds.height()-m_cursorHotspot.y()*scale);p.drawImage(QRectF(position,QSizeF(m_cursorImage.size())*scale),m_cursorImage);p.restore(); }
+        if(!m_control && m_cursorVisible && !m_cursorImage.isNull()) { p.save();p.setClipRect(bounds);const double scale=bounds.width()/m_image.width(); const QPointF position(bounds.x()+m_cursorPosition.x()*bounds.width()-m_cursorHotspot.x()*scale,bounds.y()+m_cursorPosition.y()*bounds.height()-m_cursorHotspot.y()*scale);p.drawImage(QRectF(position,QSizeF(m_cursorImage.size())*scale),m_cursorImage);p.restore(); }
     }
 }
 void RemoteCanvas::pointer(QMouseEvent *e, bool isButton, bool down) {

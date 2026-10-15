@@ -30,6 +30,9 @@ void InputController::apply(const QJsonObject &e, const QRect &screen) {
     }
 }
 void InputController::releaseAll() {
+#ifdef Q_OS_WIN
+    m_captionWindow=0; m_captionHit=0;
+#endif
     auto keys = m_keys; auto buttons = m_buttons;
     for (int k : keys) { m_keys.remove(k); key(k,false); }
     for (int b : buttons) { m_buttons.remove(b); button(b,false); }

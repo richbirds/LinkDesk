@@ -20,6 +20,10 @@
 #include <QNetworkInterface>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QMimeData>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QProgressBar>
 
 class RelayTest : public QObject {
     Q_OBJECT
@@ -132,6 +136,50 @@ private slots:
         b.connectDevice(a.deviceId()); QTRY_VERIFY_WITH_TIMEOUT(client.active(),30000); QCOMPARE(direct.size(),0); QCOMPARE(relayed.size(),1);
         client.disconnectPeer(); a.stop(); b.stop(); QSettings().remove("network/forceRelay");
     }
+    void largeFramesSurviveRepeatedPreviewExpansion() {
+        RemoteHost host; QString error;
+        QVERIFY2(host.start(0,&error,true,QHostAddress::LocalHost),qPrintable(error));
+        // A deliberately incompressible full desktop crosses the tunnel's 2 MiB
+        // forwarding window. Small static screenshots never exercise that path.
+        QImage source(1920,1080,QImage::Format_RGB32);
+        quint32 noise=0x5b72139d;
+        for(int y=0;y<source.height();++y) {
+            auto line=reinterpret_cast<QRgb *>(source.scanLine(y));
+            for(int x=0;x<source.width();++x) {
+                noise^=noise<<13; noise^=noise>>17; noise^=noise<<5;
+                line[x]=0xff000000U | (noise&0xffffffU);
+            }
+        }
+        host.setSyntheticFrame(source);
+        RelayAgent a,b; a.setAvailable(host.port(),host.fingerprint());
+        a.start(m_config,m_dir.filePath("burst-host.json")); b.start(m_config,m_dir.filePath("burst-viewer.json"));
+        QTRY_VERIFY_WITH_TIMEOUT(a.online() && b.online(),30000);
+        RemoteClient client; wireClient(b,client,host.code());
+        StreamSettings thumbnail; thumbnail.width=480;thumbnail.height=270;thumbnail.fps=1;thumbnail.quality=20;
+        client.setStreamSettings(thumbnail);
+        QImage received;
+        connect(&client,&RemoteClient::imageFrame,&client,[&](const QImage &image,qint64,bool){received=image;});
+        QSignalSpy errors(&client,&RemoteClient::error),metrics(&client,&RemoteClient::streamMetrics);
+        b.connectViaRelay(a.deviceId());
+        QTRY_VERIFY_WITH_TIMEOUT(received.size()==QSize(480,270),30000);
+        for(int cycle=0;cycle<3;++cycle) {
+            StreamSettings full;full.lossless=true;full.codec="desktop";full.fps=30;
+            client.setStreamSettings(full);
+            QTRY_VERIFY_WITH_TIMEOUT(received.size()==source.size(),60000);
+            QCOMPARE(received.convertToFormat(QImage::Format_RGB32),source);
+            // Mouse messages and heartbeats share the same duplex tunnel.
+            client.sendInput({{"action","move"},{"x",.5},{"y",.5}});
+            client.sendInput({{"action","button"},{"x",.5},{"y",.5},{"button",1},{"down",true}});
+            client.sendInput({{"action","button"},{"x",.5},{"y",.5},{"button",1},{"down",false}});
+            QTRY_VERIFY_WITH_TIMEOUT(host.streamingMetrics().value("pendingFrames").toInt()==0,10000);
+            const auto count=metrics.size();
+            QTRY_VERIFY_WITH_TIMEOUT(metrics.size()>count,10000);
+            QVERIFY(errors.isEmpty());QVERIFY(client.active());
+            client.setStreamSettings(thumbnail);
+            QTRY_VERIFY_WITH_TIMEOUT(received.size()==QSize(480,270),30000);
+        }
+        client.disconnectPeer();a.stop();b.stop();host.stop();
+    }
     void tenThumbnailsExpandAndReturnIndependently() {
         std::vector<std::unique_ptr<RemoteHost>> hosts;
         std::vector<std::unique_ptr<RelayAgent>> agents;
@@ -215,6 +263,25 @@ private slots:
         auto id=a.deviceId();
         m_server.terminate(); if (!m_server.waitForFinished(2000)) { m_server.kill(); QVERIFY(m_server.waitForFinished(5000)); } QTRY_VERIFY_WITH_TIMEOUT(!a.online(),(m_publicServer ? 30000 : 5000));
         startServer(); QTRY_VERIFY_WITH_TIMEOUT(a.online(),(m_publicServer ? 30000 : 10000)); QCOMPARE(a.deviceId(),id); a.stop();
+    }
+    void thumbnailDropTransfersOverRelay() {
+        QSettings().setValue("network/forceRelay",true);QSettings().setValue("files/receiveDirectory",m_dir.filePath("received"));
+        const auto previous=QSettings().value("connectionList/devices");QSettings().remove("connectionList/devices");
+        QFile source(m_dir.filePath("drop-test.txt"));QVERIFY(source.open(QIODevice::WriteOnly));const QByteArray payload(1024*1024,'d');source.write(payload);source.close();
+        RemoteHost host;QString error;QVERIFY(host.start(0,&error,true,QHostAddress::LocalHost));
+        RelayAgent a,b;a.setAvailable(host.port(),host.fingerprint());
+        a.start(m_config,m_dir.filePath("file-host.json"));b.start(m_config,m_dir.filePath("file-viewer.json"));
+        QTRY_VERIFY_WITH_TIMEOUT(a.online() && b.online(),30000);
+        ConnectionList list(&b);list.resize(800,600);list.show();QSignalSpy received(&host,&RemoteHost::fileReceived);
+        QVERIFY(list.connectDesktop(a.deviceId(),host.code(),false));
+        auto client=list.findChild<RemoteClient *>();QVERIFY(client);QTRY_VERIFY_WITH_TIMEOUT(client->active(),30000);
+        QWidget *card=nullptr;for(auto widget:list.findChildren<QWidget *>())if(widget->property("deviceId").toString()==a.deviceId())card=widget;
+        QVERIFY(card);QMimeData mime;mime.setUrls({QUrl::fromLocalFile(source.fileName())});
+        QDragEnterEvent enter(QPoint(20,20),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(card,&enter);QVERIFY(enter.isAccepted());
+        QDropEvent drop(QPointF(20,20),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(card,&drop);QVERIFY(drop.isAccepted());
+        QTRY_COMPARE_WITH_TIMEOUT(received.size(),1,30000);QFile result(received.first().first().toString());QVERIFY(result.open(QIODevice::ReadOnly));QCOMPARE(result.readAll(),payload);
+        auto bar=card->findChild<QProgressBar *>();QVERIFY(bar);QTRY_COMPARE(bar->value(),1000);QVERIFY(client->active());
+        list.stopAll();host.stop();a.stop();b.stop();QSettings().remove("network/forceRelay");QSettings().remove("files/receiveDirectory");QSettings().setValue("connectionList/devices",previous);
     }
     void cleanupTestCase() { if (!m_publicServer) { m_server.terminate(); if (!m_server.waitForFinished(5000)) { m_server.kill(); m_server.waitForFinished(); } } }
 };

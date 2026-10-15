@@ -1,5 +1,6 @@
 #pragma once
 #include "input.h"
+#include "filetransfer.h"
 #include "desktopcodec.h"
 #include "videocodec.h"
 #include "streamscheduler.h"
@@ -47,6 +48,8 @@ signals:
     void status(const QString &message);
     void peerChanged(bool connected, const QString &name);
     void frameSent(qint64 bytes);
+    void fileReceived(const QString &path);
+    void fileProgress(const QString &name,qint64 done,qint64 total,const QString &state);
     void streamMetrics(const QJsonObject &metrics);
 private:
     Listener m_listener;
@@ -89,11 +92,16 @@ public:
                    const QString &identity = {}, const QString &expectedFingerprint = {});
     void disconnectPeer();
     void sendInput(const QJsonObject &event);
+    void sendFiles(const QStringList &paths);
+    void cancelFiles() { m_files.cancel(); emit fileProgress({},0,0,"已取消发送"); }
+    void requestPower(const QString &action);
     void trustCertificate(bool accepted);
     void setStreamSettings(const StreamSettings &settings);
     StreamSettings streamSettings() const { return m_stream; }
     bool active() const { return m_active; }
 signals:
+    void fileProgress(const QString &name,qint64 done,qint64 total,const QString &state);
+    void powerResult(const QString &message);
     void certificateCheck(const QString &endpoint, const QString &sha256);
     void connected(const QString &name, bool control);
     void controlChanged(bool enabled);
@@ -105,6 +113,8 @@ signals:
     void cursorFrame(const QImage &image,const QPoint &hotspot,const QPointF &position,bool visible);
     void streamMetrics(const QJsonObject &metrics);
 private:
+    FileTransfer m_files{this};
+    bool m_filesSupported=false;
     QPointer<QSslSocket> m_socket;
     QPointer<Wire> m_wire;
     QTimer m_timeout, m_heartbeat;

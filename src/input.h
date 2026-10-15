@@ -11,6 +11,11 @@ public:
 private:
     QSet<int> m_keys;
     QSet<int> m_buttons;
+#ifdef Q_OS_WIN
+    // Bypass native caption tracking and stale VM non-client hit tests.
+    quintptr m_captionWindow=0;
+    int m_captionHit=0;
+#endif
     void movePointer(const QPoint &position);
     void pointerButton(const QPoint &position,int button,bool down);
     void scrollWheel(int ticks);

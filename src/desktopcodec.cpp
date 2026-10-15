@@ -25,6 +25,9 @@ bool decodeImage(const QByteArray &bytes,QSize expected,QImage *image) {
 }
 }
 void DesktopEncoder::reset() { m_reference={}; m_candidate={}; m_sequence=0; m_candidateSequence=0; m_referenceSerial=0; m_referenceLossy=false; m_lastChange=0; }
+QByteArray DesktopEncoder::repeatReference() const {
+    return m_reference.isNull() ? QByteArray() : header(Repeat,m_sequence,m_sequence,m_reference.size());
+}
 void DesktopEncoder::commit() { if(!m_candidate.isNull()) { m_reference=m_candidate; m_sequence=m_candidateSequence; m_referenceSerial=m_candidateSerial; m_referenceLossy=m_candidateLossy; m_candidate={}; } }
 QByteArray DesktopEncoder::encode(const QImage &source,int quality,bool lossless) {
     static thread_local QElapsedTimer clock; if(!clock.isValid()) clock.start();

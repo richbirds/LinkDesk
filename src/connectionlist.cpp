@@ -4,6 +4,14 @@
 #include "viewer.h"
 #include "platform.h"
 #include <QBuffer>
+#include <QMenu>
+#include <QToolButton>
+#include <QContextMenuEvent>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QMimeData>
+#include <QFileDialog>
+#include <QProgressBar>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCryptographicHash>
@@ -45,7 +53,11 @@ class Preview : public QWidget {
 public:
     QImage image;
     int state=0;
-    explicit Preview(QWidget *parent=nullptr):QWidget(parent) { setMinimumHeight(150); setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Fixed); setToolTip("双击绿色缩略图，打开远程桌面"); }
+    QToolButton *actions;
+    explicit Preview(QWidget *parent=nullptr):QWidget(parent) { setContextMenuPolicy(Qt::PreventContextMenu);setMinimumHeight(120); setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Fixed); setToolTip("双击绿色缩略图，打开远程桌面；右键显示常用操作");
+        actions=new QToolButton(this);actions->setText("⋯");actions->setToolTip("常用操作");actions->setFixedSize(28,22);actions->setStyleSheet("QToolButton{background:#edf2fa;color:#385274;border:0;border-radius:5px;font-size:18px;}");
+        connect(actions,&QToolButton::clicked,this,[this]{emit menuRequested(actions->mapToGlobal(QPoint(0,actions->height())));});
+    }
     bool frame(const QByteArray &bytes) {
         QBuffer buffer; buffer.setData(bytes); buffer.open(QIODevice::ReadOnly); QImageReader reader(&buffer); reader.setDecideFormatFromContent(true);
         const auto size=reader.size();
@@ -55,7 +67,10 @@ public:
     }
 signals:
     void opened();
+    void menuRequested(const QPoint &globalPosition);
 protected:
+    void resizeEvent(QResizeEvent *e) override {QWidget::resizeEvent(e);actions->move(width()-62,6);}
+    void mouseReleaseEvent(QMouseEvent *e) override {if(e->button()==Qt::RightButton) emit menuRequested(e->globalPosition().toPoint());else QWidget::mouseReleaseEvent(e);}
     void mouseDoubleClickEvent(QMouseEvent *e) override { if (e->button()==Qt::LeftButton) emit opened(); }
     void paintEvent(QPaintEvent *) override {
         QPainter p(this); p.fillRect(rect(),QColor("#101b32"));
@@ -81,13 +96,23 @@ public:
     QLabel *caption,*status;
     QPushButton *toggle;
     QTimer retry,watch;
+    QProgressBar *transferBar;
+    QLabel *transferText;
     DeviceCard(RelayAgent *relay,QWidget *parent):QFrame(parent),agent(relay),client(this) {
-        setObjectName("card"); setMinimumWidth(245); setMaximumWidth(600);
-        auto layout=new QVBoxLayout(this); layout->setContentsMargins(12,12,12,12);
+        setAcceptDrops(true);setObjectName("card"); setMinimumWidth(245); setMaximumWidth(600);
+        auto layout=new QVBoxLayout(this); layout->setContentsMargins(10,10,10,10);layout->setSpacing(6);
         preview=new Preview; layout->addWidget(preview);
+        connect(preview,&Preview::menuRequested,this,[this](const QPoint &position){showMenu(position);});
         caption=new QLabel; caption->setTextFormat(Qt::PlainText); caption->setWordWrap(true); caption->setStyleSheet("font-weight:600;font-size:16px;"); layout->addWidget(caption);
-        status=new QLabel("未连接"); status->setTextFormat(Qt::PlainText); status->setWordWrap(true); status->setMinimumHeight(36); layout->addWidget(status);
+        status=new QLabel("未连接"); status->setTextFormat(Qt::PlainText); status->setWordWrap(true); status->setMinimumHeight(22); layout->addWidget(status);
         auto row=new QHBoxLayout; toggle=new QPushButton("连接"); auto modify=new QPushButton("修改"),remove=new QPushButton("删除"); row->addWidget(toggle); row->addWidget(modify); row->addWidget(remove); layout->addLayout(row);
+        transferText=new QLabel;transferText->setTextFormat(Qt::PlainText);transferText->setWordWrap(true);transferText->hide();layout->addWidget(transferText);
+        transferBar=new QProgressBar;transferBar->setRange(0,1000);transferBar->setFixedHeight(14);transferBar->hide();layout->addWidget(transferBar);
+        connect(&client,&RemoteClient::fileProgress,this,[this](const QString &name,qint64 done,qint64 total,const QString &state){
+            transferText->setText(name+" · "+state);transferText->show();transferBar->show();transferBar->setValue(total ? int(double(done)/total*1000) : 0);
+            transferBar->setFormat(total ? QString::number(int(double(done)/total*100))+"%" : state);
+        });
+        connect(&client,&RemoteClient::powerResult,this,[this](const QString &message){QMessageBox::information(this,"远程电源操作",message);});
         viewer=new ViewerWindow(&client,this); viewer->setManaged(true); viewer->preview();
         connect(modify,&QPushButton::clicked,this,[this]{emit editRequested();});
         connect(remove,&QPushButton::clicked,this,[this]{emit removeRequested();});
@@ -118,6 +143,7 @@ public:
             if(openWhenReady) { openWhenReady=false; viewer->begin(name,control); }
         });
         connect(&client,&RemoteClient::streamMetrics,this,[this](const QJsonObject &metrics){
+            if(qEnvironmentVariableIsSet("LINKDESK_STREAM_TRACE")) qInfo().noquote()<<"Viewer metrics"<<QJsonDocument(metrics).toJson(QJsonDocument::Compact);
             // v0.7.0 hosts suppress unchanged image packets. A live capture loop
             // with no unacknowledged pictures confirms the last image is current.
             if(client.active() && !preview->image.isNull() && metrics.contains("pendingFrames") && metrics.value("pendingFrames").toInt(-1)==0) {
@@ -138,7 +164,7 @@ public:
     }
     ~DeviceCard() override { stop(); }
     QString account() const { const auto c=agent->config(); return "list:"+uid+":"+c.host.toLower()+":"+QString::number(c.port); }
-    void updateCaption() { caption->setText(name+"\n"+target); setProperty("deviceId",target); preview->setObjectName("preview-"+target); }
+    void updateCaption() { caption->setText(name==target || name=="设备 "+target ? target : name+" · "+target); setProperty("deviceId",target); preview->setObjectName("preview-"+target); }
     void setState(int state,const QString &text) { preview->state=state; preview->update(); status->setText(text); status->setToolTip(text); toggle->setText(wanted ? "断开" : "连接"); emit stateChanged(text,state,wanted); }
     void cleanup() {
         ++generation; busy=false; auto old=channel; channel.clear();
@@ -191,6 +217,29 @@ public:
         });
         agent->resolveDevice(target); QTimer::singleShot(5000,owner,relay);
     }
+protected:
+    void dragEnterEvent(QDragEnterEvent *e) override {
+        if(client.active() && e->mimeData()->hasUrls()) for(const auto &url:e->mimeData()->urls()) if(url.isLocalFile() && QFileInfo(url.toLocalFile()).isFile()) {e->acceptProposedAction();return;}
+    }
+    void dropEvent(QDropEvent *e) override {
+        if(!client.active()) return;QStringList files;
+        for(const auto &url:e->mimeData()->urls()) if(url.isLocalFile()) files.append(url.toLocalFile());
+        client.sendFiles(files);e->acceptProposedAction();
+    }
+    void contextMenuEvent(QContextMenuEvent *e) override {showMenu(e->globalPos());}
+    void showMenu(const QPoint &position) {
+        QMenu menu;auto send=menu.addAction("传送文件…");send->setEnabled(client.active());auto cancel=menu.addAction("取消文件发送");menu.addSeparator();
+        auto restart=menu.addAction("重启远程电脑…"),shutdown=menu.addAction("关闭远程电脑…");
+        restart->setEnabled(client.active() && control);shutdown->setEnabled(client.active() && control);
+        auto selected=menu.exec(position);
+        if(selected==send) client.sendFiles(QFileDialog::getOpenFileNames(this,"选择要传送的文件"));
+        else if(selected==cancel) client.cancelFiles();
+        else if(selected==restart || selected==shutdown) {
+            const auto text=selected==restart ? "重启" : "关机";
+            if(QMessageBox::question(this,"确认远程电源操作",QString("确定对 %1 执行%2？请先保存对方未保存的工作。").arg(name,text))==QMessageBox::Yes)
+                client.requestPower(selected==restart ? "restart" : "shutdown");
+        }
+    }
 signals:
     void editRequested();
     void removeRequested();
@@ -199,7 +248,7 @@ signals:
 };
 
 ConnectionList::ConnectionList(RelayAgent *agent,QWidget *parent):QWidget(parent),m_agent(agent) {
-    auto layout=new QVBoxLayout(this); layout->setContentsMargins(32,30,32,26);
+    auto layout=new QVBoxLayout(this); layout->setContentsMargins(18,16,18,16);
     auto title=new QLabel("连接列表"); title->setObjectName("title"); layout->addWidget(title);
     auto hint=new QLabel("双击绿色缩略图操作远程电脑；关闭或最小化远程窗口后返回低带宽缩略图。<br/>"
         "<span style=\"color:#8b95a5\">●</span> 灰色：未连接 / 不在线　"
