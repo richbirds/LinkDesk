@@ -42,6 +42,7 @@ public:
     QString fingerprint() const;
     void rotateCode();
     bool setCode(const QString &code,QString *error=nullptr);
+    void setSyntheticCapturePending(bool pending) { if(m_testMode) m_syntheticPending=pending; }
     void setSyntheticFrame(const QImage &image) { if(m_testMode) m_syntheticFrame=image; }
     QJsonObject streamingMetrics() const { auto metrics=m_scheduler.metrics(m_frameClock.isValid() ? m_frameClock.elapsed() : 0);metrics["transportBytes"]=double(m_transportBytes);metrics["videoFrames"]=double(m_videoFrames);metrics["videoFallbacks"]=double(m_videoFallbacks);return metrics; }
 signals:
@@ -67,7 +68,8 @@ private:
     bool m_control = false, m_testMode = false;
     QThread m_encoderThread;
     QObject *m_encoder=nullptr;
-    bool m_encoding=false;
+    QString m_captureReason;
+    bool m_encoding=false,m_captureWaiting=false,m_syntheticPending=false;
     quint64 m_captureGeneration=0;
     qint64 m_lastCapture=-10000,m_lastFrameSent=-10000;
     QElapsedTimer m_frameClock;

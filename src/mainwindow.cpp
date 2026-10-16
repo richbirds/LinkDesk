@@ -2,6 +2,7 @@
 #include "adminpassword.h"
 #include "systemsettings.h"
 #include "exitdeadline.h"
+#include "trayicon.h"
 #include <QSystemTrayIcon>
 #include <QMenu>
 #include <QSettings>
@@ -67,6 +68,7 @@ static RelayConfig readConfig() {
     return parseConfig(QJsonDocument::fromJson(file.readAll()).object());
 }
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_relay(this) {
+    QString startupStorageError;
     connect(&m_host,&RemoteHost::fileReceived,this,[this](const QString &path){
         auto prompt=new QMessageBox(QMessageBox::Information,"文件接收完成",QFileInfo(path).fileName()+" 已保存。是否打开所在文件夹？",QMessageBox::Yes|QMessageBox::No,this);
         prompt->setTextFormat(Qt::PlainText);prompt->setAttribute(Qt::WA_DeleteOnClose);prompt->setWindowModality(Qt::NonModal);
@@ -75,7 +77,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_rel
     qApp->installEventFilter(this);
     if(!qApp->property("linkdesk.previewMode").toBool()) {
         qApp->setQuitOnLastWindowClosed(false);
-        auto icon=QIcon(":/brand/linkdesk.png");if(icon.isNull())icon=style()->standardIcon(QStyle::SP_ComputerIcon);
+        auto icon=Branding::trayIcon();
         m_tray=new QSystemTrayIcon(icon,this);m_tray->setObjectName("linkdeskTray");m_tray->setToolTip("LinkDesk · 远程桌面");
         auto menu=new QMenu(this);auto restore=menu->addAction("显示界面");restore->setObjectName("trayShowAction");
         menu->addSeparator();auto exit=menu->addAction("退出");exit->setObjectName("trayExitAction");
@@ -130,7 +132,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_rel
           "4. 主控端输入 ID 和密码，即可跨网络连接。\n"
           "5. 被控端开启鼠标键盘控制后才接受操作。\n\n"
           + Platform::permissionHelp()+"\n" +
-          "共享开关会记住，下次启动可自动共享。控制开关每次启动需主动开启。\n"
+          "共享开关会记住，下次启动可自动共享。鼠标控制会记住你的选择；Mac 仍需系统授权。\n"
           "支持主屏幕与常用英文按键，支持拖放文件到连接列表缩略图；暂不支持中文输入法或音频。\n"
           "Ctrl+Shift+Esc 退出全屏，窗口模式下断开连接。");
     });
@@ -175,9 +177,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_rel
         message("连接密码已更新，现有会话已断开。");
     });
     m_saveHostPassword=new QCheckBox("保存本机连接密码（下次启动继续使用）"); local->addWidget(m_saveHostPassword);
-    if (QSettings().value("saveHostPassword",false).toBool()) {
-        const auto saved=Platform::loadPassword("host-password"); QString error;
-        if (m_host.setCode(saved,&error)) { m_code->setText(saved); m_saveHostPassword->setChecked(true); }
+    m_saveHostPassword->setObjectName("saveHostPassword");
+    m_saveHostPassword->setChecked(QSettings().value("saveHostPassword",true).toBool());
+    if(m_saveHostPassword->isChecked() && !qApp->property("linkdesk.previewMode").toBool()) {
+        const auto saved=Platform::loadPassword("host-password");QString error;
+        if(!saved.isEmpty() && m_host.setCode(saved,&error)) m_code->setText(m_host.code());
+        else if(!Platform::savePassword("host-password",m_host.code())) {
+            m_saveHostPassword->setChecked(false);startupStorageError="本机密码加密保存失败，请检查本机数据目录权限。";
+        }
     }
     connect(m_saveHostPassword,&QCheckBox::toggled,this,[this](bool enabled) {
         bool ok=enabled ? Platform::savePassword("host-password",m_host.code()) : Platform::removePassword("host-password");
@@ -195,8 +202,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_rel
     local->addWidget(label("连接服务器","muted"));
     m_server=label("请先打开服务器设置","muted"); local->addWidget(m_server);
     m_control=new QCheckBox("允许鼠标键盘控制"); local->addWidget(m_control);
-    m_control->setToolTip("未勾选时，对方只能观看。每次启动后需重新勾选以允许远程操作。");
+    m_control->setObjectName("allowRemoteControl");
+    m_control->setToolTip("未勾选时，对方只能观看。记住你的选择；Mac 仍需系统辅助功能授权。");
+    m_control->setChecked(QSettings().value("controlEnabled",true).toBool());
     connect(m_control,&QCheckBox::toggled,this,[this](bool enabled) {
+        QSettings().setValue("controlEnabled",enabled);
         QString error;
         if (!m_host.setControl(enabled,&error)) {
             QSignalBlocker blocker(m_control); m_control->setChecked(false); message(error,true);
@@ -222,22 +232,24 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_rel
     m_password->setEchoMode(QLineEdit::Password); m_password->setMaxLength(64); other->addWidget(m_password);
     auto showCode=new QCheckBox("显示密码"); other->addWidget(showCode);
     connect(showCode,&QCheckBox::toggled,this,[this](bool show) { m_password->setEchoMode(show ? QLineEdit::Normal : QLineEdit::Password); });
-    m_rememberPassword=new QCheckBox("保存此设备的连接密码"); other->addWidget(m_rememberPassword);
+    m_rememberPassword=new QCheckBox("保存此设备的连接密码"); m_rememberPassword->setChecked(true);other->addWidget(m_rememberPassword);
     m_rememberPassword->setToolTip("Mac 使用本机加密保存，Windows 使用当前用户的 DPAPI 加密。取消勾选会删除已保存的密码。");
     connect(m_target,&QLineEdit::textChanged,this,[this] {
         const auto target=m_target->text().remove(' '); m_password->clear();
-        QSignalBlocker blocker(m_rememberPassword); m_rememberPassword->setChecked(false);
-        if (!QRegularExpression("^[0-9]{9}$").match(target).hasMatch()) return;
+        QSignalBlocker blocker(m_rememberPassword);
+        m_rememberPassword->setChecked(QSettings().value("rememberRemotePassword/"+target,true).toBool());
+        if(!m_rememberPassword->isChecked() || !QRegularExpression("^[0-9]{9}$").match(target).hasMatch()) return;
         const auto saved=Platform::loadPassword(passwordAccount(target));
-        if (!saved.isEmpty()) { m_password->setText(saved); m_rememberPassword->setChecked(true); }
+        if(!saved.isEmpty()) m_password->setText(saved);
     });
     connect(m_rememberPassword,&QCheckBox::toggled,this,[this](bool enabled) {
         const auto target=m_target->text().remove(' ');
+        if(QRegularExpression("^[0-9]{9}$").match(target).hasMatch()) QSettings().setValue("rememberRemotePassword/"+target,enabled);
         if (!enabled && QRegularExpression("^[0-9]{9}$").match(target).hasMatch() && !Platform::removePassword(passwordAccount(target))) message("无法删除系统保存的密码。",true);
     });
     other->addStretch(); other->addWidget(label("服务器自动定位设备，密码在两端之间验证。","muted"));
     m_connect=new QPushButton("连接远程设备  →"); m_connect->setObjectName("primary"); other->addWidget(m_connect);
-    other->addWidget(label("端到端 TLS · 默认仅观看 · 画质与帧率可调","muted"));
+    other->addWidget(label("端到端 TLS · 控制权限由受控端设置 · 画质与帧率可调","muted"));
     connect(m_connect,&QPushButton::clicked,this,&MainWindow::connectRemote);
     connect(m_password,&QLineEdit::returnPressed,this,&MainWindow::connectRemote);
     body->addLayout(cards,1);
@@ -268,6 +280,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_rel
     connect(&m_relay,&RelayAgent::status,this,[this](const QString &s) { message(s); });
     connect(&m_relay,&RelayAgent::error,this,[this](const QString &s) { message(s,true); });
     m_target->setText(QSettings().value("lastDeviceId").toString());
+    if(!startupStorageError.isEmpty()) message(startupStorageError,true);
     if(!qApp->property("linkdesk.previewMode").toBool())
         QTimer::singleShot(0,this,&MainWindow::startConfiguredServer);
 }
@@ -276,17 +289,26 @@ void MainWindow::message(const QString &text,bool error) {
 }
 void MainWindow::toggleShare() {
     if (m_host.isListening()) {
-        m_relay.setAvailable(0); m_host.stop(); QSettings().setValue("shareEnabled",false);
+        m_shareRetry.stop(); m_relay.setAvailable(0); m_host.stop(); QSettings().setValue("shareEnabled",false);
         m_share->setText("开启共享"); m_hostStatus->setText("●  共享未开启"); message("屏幕共享已关闭。"); return;
     }
     if (!m_relay.config().valid()) { configureServer(); if (!m_relay.config().valid()) return; }
-    QString error;
-    if (!m_host.start(45432,&error,false,QHostAddress::Any) && !m_host.start(0,&error,false,QHostAddress::Any)) { message(error,true); return; }
-    m_relay.setAvailable(m_host.port(),m_host.fingerprint()); QSettings().setValue("shareEnabled",true);
-    m_share->setText("关闭共享");
-    m_fingerprint->setText("本机证书 SHA-256\n"+m_host.fingerprint());
-    message("共享已开启。请将设备 ID 和临时密码提供给对方。");
+    QString error;if(!startSharing(&error)) {message(error,true);return;}
+    QSettings().setValue("shareEnabled",true);
 }
+bool MainWindow::startSharing(QString *error) {
+    if(m_host.isListening())return true;
+    QString controlError;
+    const bool wanted=QSettings().value("controlEnabled",true).toBool();
+    const bool allowed=m_host.setControl(wanted,&controlError);
+    {QSignalBlocker blocker(m_control);m_control->setChecked(wanted && allowed);}
+    if(!m_host.start(45432,error,false,QHostAddress::Any) && !m_host.start(0,error,false,QHostAddress::Any))return false;
+    m_relay.setAvailable(m_host.port(),m_host.fingerprint());
+    m_share->setText("关闭共享");m_fingerprint->setText("本机证书 SHA-256\n"+m_host.fingerprint());
+    message(controlError.isEmpty() ? "共享已开启。请将设备 ID 和连接密码提供给对方。" : "共享已开启，仅观看："+controlError,!controlError.isEmpty());
+    return true;
+}
+
 void MainWindow::connectRemote() {
     if (m_list->wantsConnection(m_connectingTarget)) { m_list->disconnectDesktop(m_connectingTarget); message("远程连接已断开。"); return; }
     const auto target=m_target->text().remove(' ');
@@ -306,7 +328,7 @@ void MainWindow::connectRemote() {
 MainWindow::~MainWindow() {
     qApp->removeEventFilter(this);
     for(auto transfer:findChildren<FileTransfer *>()) transfer->shutdown();
-    m_list->stopAll();m_relay.stop();m_host.stop();
+    m_shareRetry.stop();m_list->stopAll();m_relay.stop();m_host.stop();
 }
 bool MainWindow::eventFilter(QObject *object,QEvent *event) {
     if(object==qApp && event->type()==QEvent::Quit && !m_exiting && !qApp->property("linkdesk.previewMode").toBool()) {
@@ -359,10 +381,20 @@ void MainWindow::closeEvent(QCloseEvent *event) {
     if(m_exiting || qApp->property("linkdesk.previewMode").toBool()) {event->accept();beginExit();return;}
     event->ignore();hideToTray();
 }
+void MainWindow::restoreSharing() {
+    if(m_exiting || !QSettings().value("shareEnabled",true).toBool() || !m_relay.config().valid()) { m_shareRetry.stop(); return; }
+    QString error;
+    if(startSharing(&error)) { m_shareRetry.stop(); return; }
+    message(error,true);
+#ifdef Q_OS_WIN
+    if(!m_shareRetry.isActive()) m_shareRetry.start(5000);
+#endif
+}
 void MainWindow::startConfiguredServer() {
     auto config=readConfig(); if (!config.valid()) return;
     m_relay.start(config);
-    if (QSettings().value("shareEnabled",false).toBool()) toggleShare();
+    connect(&m_shareRetry,&QTimer::timeout,this,&MainWindow::restoreSharing,Qt::UniqueConnection);
+    restoreSharing();
 }
 void MainWindow::configureServer() {
     QDialog dialog(this); dialog.setWindowTitle("软件设置"); dialog.setMinimumWidth(620);
@@ -446,6 +478,8 @@ void MainWindow::configureServer() {
         QSettings().setValue("network/forceRelay",forceRelay->isChecked());
         if((changed || networkChanged) && chosen.valid()) m_relay.start(chosen);
         dialog.accept();
+        if(chosen.valid() && QSettings().value("shareEnabled",true).toBool() && !m_host.isListening())
+            QTimer::singleShot(0,this,[this]{QString error;if(!startSharing(&error))message(error,true);});
     });
     dialog.exec();
 }

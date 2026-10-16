@@ -16,6 +16,8 @@
 #include <QPushButton>
 #include <QMessageBox>
 #include <QStackedWidget>
+#include <QCheckBox>
+#include <QLineEdit>
 #include <thread>
 #include <chrono>
 
@@ -35,6 +37,27 @@ int main(int argc,char **argv) {
         QSettings::setDefaultFormat(QSettings::IniFormat);QSettings::setPath(QSettings::IniFormat,QSettings::UserScope,state.path());
         const auto directory=QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);QDir().mkpath(directory);
         QFile config(directory+"/relay-config.json");if(!config.open(QIODevice::WriteOnly))return 3;config.write("{}");config.close();
+        if(args.contains("--preferences")) {
+            {
+                MainWindow fresh;
+                auto save=fresh.findChild<QCheckBox *>("saveHostPassword"),control=fresh.findChild<QCheckBox *>("allowRemoteControl");
+                if(!save || !control || !save->isChecked() || !control->isChecked())return 30;
+                auto host=fresh.findChild<RemoteHost *>();if(Platform::loadPassword("host-password")!=host->code())return 31;
+                QTest::qWait(20);if(QSettings().contains("saveHostPassword") || QSettings().contains("controlEnabled") || QSettings().contains("shareEnabled"))return 32;
+                save->setChecked(false);control->setChecked(false);QSettings().setValue("shareEnabled",false);
+                auto target=fresh.findChild<QLineEdit *>("remoteDeviceId");target->setText("123456789");
+                QCheckBox *remember=nullptr;for(auto box:fresh.findChildren<QCheckBox *>())if(box->text()=="保存此设备的连接密码")remember=box;
+                if(!remember || !remember->isChecked())return 33;remember->setChecked(false);
+            }
+            {
+                MainWindow reopened;QTest::qWait(20);
+                if(reopened.findChild<QCheckBox *>("saveHostPassword")->isChecked() || reopened.findChild<QCheckBox *>("allowRemoteControl")->isChecked())return 34;
+                if(QSettings().value("shareEnabled",true).toBool() || !Platform::loadPassword("host-password").isEmpty())return 35;
+                reopened.findChild<QLineEdit *>("remoteDeviceId")->setText("123456789");
+                for(auto box:reopened.findChildren<QCheckBox *>())if(box->text()=="保存此设备的连接密码" && box->isChecked())return 36;
+            }
+            QFile::remove(config.fileName());return 0;
+        }
         QSettings().setValue("connectionList/devices",QJsonArray{QJsonObject{{"target","123456789"},{"name","UI test"},{"automatic",false}}});
         MainWindow window;window.resize(860,560);window.show();
         auto host=window.findChild<RemoteHost *>();if(!host)return 14;QString error;if(!host->start(0,&error,true))return 15;
@@ -76,7 +99,7 @@ int main(int argc,char **argv) {
         QTimer::singleShot(15000,&app,[&]{app.exit(77);});
         const int result=app.exec();QFile::remove(config.fileName());return checked ? result : 4;
     }
-    for(const auto &mode:QStringList{"plain","viewer","transfer","blocked"}) {
+    for(const auto &mode:QStringList{"plain","viewer","transfer","blocked","preferences"}) {
         QProcess child;QStringList options{"--child","--"+mode};child.start(QCoreApplication::applicationFilePath(),options);
         if(!child.waitForStarted(5000))return 5;
         if(!child.waitForFinished(12000)){child.kill();child.waitForFinished();qCritical("Exit timed out: %s",qPrintable(mode));return 6;}

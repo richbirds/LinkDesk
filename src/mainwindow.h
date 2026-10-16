@@ -30,6 +30,8 @@ private:
     QList<QPointer<QWidget>> m_hiddenWindows;
     void hideToTray();
     void beginExit();
+    QTimer m_shareRetry;
+    void restoreSharing();
     RemoteHost m_host;
     RelayAgent m_relay;
     ConnectionList *m_list;
@@ -41,6 +43,7 @@ private:
     QString m_hostViewer, m_connectingTarget;
     QString passwordAccount(const QString &target) const;
     void toggleShare();
+    bool startSharing(QString *error);
     void connectRemote();
     void message(const QString &text, bool error=false);
     void configureServer();

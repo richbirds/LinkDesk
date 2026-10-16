@@ -15,7 +15,7 @@ int main(int argc,char **argv) {
     QApplication app(argc,argv);
     app.setStyle("Fusion");
     app.setWindowIcon(QIcon(":/brand/linkdesk.png"));
-    app.setOrganizationName("LinkDesk"); app.setApplicationName("LinkDesk"); app.setApplicationVersion("0.9.0");
+    app.setOrganizationName("LinkDesk"); app.setApplicationName("LinkDesk"); app.setApplicationVersion("0.9.3");
     const auto args=app.arguments();
     const int index=args.indexOf("--screenshot");
     const bool preview=index>=0 && index+1<args.size();

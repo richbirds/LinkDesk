@@ -1,11 +1,11 @@
 # LinkDesk icon
 
-Warm ivory background, pale sage and apricot screens, charcoal connecting mark. No blue background. The design represents two connected desktops, with clean shapes that remain recognizable at small sizes.
+The application icon uses two linked desktops, pale sage and apricot screen fills, charcoal contours and a transparent alpha background. The mark occupies most of the canvas, without an opaque square tile. Master: `linkdesk.png` (1024 × 1024); native packages: `LinkDesk.icns` and `LinkDesk.ico`.
 
-Master: `linkdesk.png` (1024 × 1024). Platform assets: `LinkDesk.icns`, `LinkDesk.ico` (16–256 px).
+The master was edited with the built-in image generation tool and packaged with `scripts/generate_icons.py`, which preserves alpha and strips metadata.
 
-Generated using the built-in image generation tool, then packaged into native icon formats with `scripts/generate_icons.py`. Generated image metadata is stripped from the packaged assets.
+Final editing prompt:
 
-Final generation prompt:
+> Preserve the two linked computer monitors identity, pale sage green and apricot screen fills, thick crisp charcoal outlines, simple modern flat style, no text and no blue. Replace the entire ivory background with genuine alpha transparency. Enlarge and center the symbol to fill roughly 90% of a square canvas with a narrow safety margin. Simplify small details; no shadow, fake checkerboard or background tile.
 
-> Refine the LinkDesk application icon while keeping the two connected monitor composition and warm ivory, pale sage and pale apricot palette. Make the design flatter, simpler and more refined with a crisp charcoal outline and minimal depth. Use a perfectly clean uniform pale warm ivory background filling the entire square image. No transparency, no blue, no text, no watermark. Final square app icon master, not a mockup.
+Tray icons are rendered separately by `src/trayicon.h` at native sizes. They use enlarged, simplified monitor contours without the small connecting link or background tile. macOS receives a monochrome template mask for automatic light/dark menu-bar rendering. Windows receives a transparent sage/apricot mark.

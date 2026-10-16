@@ -17,26 +17,43 @@ class DesktopCapture {
     bool reported=false;
     quint64 serial=0;
     CaptureFrame metadata;
+    QString lastFailure;
     void reset() { release(staging); release(duplication); release(context); release(device); last={}; }
     bool initialize(const QRect &wanted) {
         reset(); geometry=wanted;
-        D3D_FEATURE_LEVEL level;
-        if(FAILED(D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_HARDWARE,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,nullptr,0,D3D11_SDK_VERSION,&device,&level,&context))) return false;
-        IDXGIDevice *dxgi=nullptr; IDXGIAdapter *adapter=nullptr; IDXGIOutput *output=nullptr; IDXGIOutput1 *output1=nullptr;
-        bool ok=false;
-        if(SUCCEEDED(device->QueryInterface(IID_IDXGIDevice,reinterpret_cast<void **>(&dxgi))) && SUCCEEDED(dxgi->GetAdapter(&adapter))) {
-            for(UINT i=0;adapter->EnumOutputs(i,&output)!=DXGI_ERROR_NOT_FOUND;++i) {
-                if(!output) break;
-                DXGI_OUTPUT_DESC desc{}; output->GetDesc(&desc);
-                const auto r=desc.DesktopCoordinates;
-                if(desc.AttachedToDesktop && QRect(r.left,r.top,r.right-r.left,r.bottom-r.top)==wanted && desc.Rotation==DXGI_MODE_ROTATION_IDENTITY) {
-                    if(SUCCEEDED(output->QueryInterface(IID_IDXGIOutput1,reinterpret_cast<void **>(&output1)))) ok=SUCCEEDED(output1->DuplicateOutput(device,&duplication));
-                    release(output); break;
+        IDXGIFactory1 *factory=nullptr;
+        HRESULT failure=CreateDXGIFactory1(IID_IDXGIFactory1,reinterpret_cast<void **>(&factory));
+        const bool factoryReady=SUCCEEDED(failure);
+        bool matched=false,ok=false;
+        if(SUCCEEDED(failure)) {
+            IDXGIAdapter1 *adapter=nullptr;
+            for(UINT i=0;!ok && SUCCEEDED(factory->EnumAdapters1(i,&adapter));++i) {
+                IDXGIOutput *output=nullptr;
+                for(UINT j=0;!ok && SUCCEEDED(adapter->EnumOutputs(j,&output));++j) {
+                    DXGI_OUTPUT_DESC desc{};
+                    if(SUCCEEDED(output->GetDesc(&desc))) {
+                        const auto r=desc.DesktopCoordinates;
+                        if(desc.AttachedToDesktop && QRect(r.left,r.top,r.right-r.left,r.bottom-r.top)==wanted && desc.Rotation==DXGI_MODE_ROTATION_IDENTITY) {
+                            matched=true;D3D_FEATURE_LEVEL level;
+                            // The device must belong to the adapter owning this output,
+                            // including an indirect/virtual display on another adapter.
+                            release(context);release(device);
+                            failure=D3D11CreateDevice(adapter,D3D_DRIVER_TYPE_UNKNOWN,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,nullptr,0,D3D11_SDK_VERSION,&device,&level,&context);
+                            IDXGIOutput1 *output1=nullptr;
+                            if(SUCCEEDED(failure)) failure=output->QueryInterface(IID_IDXGIOutput1,reinterpret_cast<void **>(&output1));
+                            if(SUCCEEDED(failure)) failure=output1->DuplicateOutput(device,&duplication);
+                            ok=SUCCEEDED(failure);release(output1);
+                        }
+                    }
+                    release(output);
                 }
-                release(output);
+                release(adapter);
             }
         }
-        release(output1); release(output); release(adapter); release(dxgi); return ok;
+        release(factory);
+        if(!ok) lastFailure=(!factoryReady || matched) ? QString("DXGI 初始化失败（0x%1）").arg(quint32(failure),8,16,QChar('0')) : "DXGI 未找到与当前桌面匹配的活动显示输出";
+        else lastFailure.clear();
+        return ok;
     }
 public:
     ~DesktopCapture() { reset(); }
@@ -50,7 +67,7 @@ public:
         IDXGIResource *resource=nullptr; DXGI_OUTDUPL_FRAME_INFO info{};
         auto hr=duplication->AcquireNextFrame(0,&info,&resource);
         if(hr==DXGI_ERROR_WAIT_TIMEOUT) { metadata.unchanged=true; metadata.serial=serial; return last.isNull() ? QImage() : last.scaled(maximum,Qt::KeepAspectRatio,Qt::FastTransformation); }
-        if(FAILED(hr)) { reset(); retryAfter=now+1000; return {}; }
+        if(FAILED(hr)) { lastFailure=QString("DXGI 取帧失败（0x%1）").arg(quint32(hr),8,16,QChar('0')); reset(); retryAfter=now+1000; return {}; }
         if(!info.LastPresentTime.QuadPart && !last.isNull()) { release(resource);duplication->ReleaseFrame();metadata.unchanged=true;metadata.serial=serial;return last.scaled(maximum,Qt::KeepAspectRatio,Qt::FastTransformation); }
         if(info.TotalMetadataBufferSize && !last.isNull()) {
             QByteArray buffer(int(info.TotalMetadataBufferSize),Qt::Uninitialized); UINT used=0;
@@ -89,13 +106,13 @@ public:
             }
         }
         release(texture); release(resource); duplication->ReleaseFrame();
-        if(!ok) { reset(); retryAfter=now+5000; return {}; }
+        if(!ok) { lastFailure="DXGI 画面读取失败"; reset(); retryAfter=now+5000; return {}; }
         metadata.serial=++serial;
         if(last.size()!=last.size().scaled(maximum,Qt::KeepAspectRatio)) metadata.regionsValid=false;
         if(!reported) { qInfo("Windows capture: DXGI Desktop Duplication active"); reported=true; }
         return last.scaled(maximum,Qt::KeepAspectRatio,Qt::FastTransformation);
     }
-    CaptureFrame capture(const QRect &geometry,const QSize &maximum) { const auto image=frame(geometry,maximum); auto result=metadata; result.image=image; return result; }
+    CaptureFrame capture(const QRect &geometry,const QSize &maximum) { const auto image=frame(geometry,maximum); auto result=metadata; result.image=image; if(image.isNull()) result.waitReason=lastFailure; return result; }
 };
 }
 QImage captureDesktopDXGI(const QRect &geometry,const QSize &maximum) {

@@ -19,6 +19,30 @@ private slots:
         QCoreApplication::setApplicationName("LinkDeskTests");
         QStandardPaths::setTestModeEnabled(true);
     }
+    void transientDesktopUnavailabilityKeepsSessionAndRecovers() {
+        RemoteHost host; QString error;
+        QVERIFY2(host.start(0,&error,true),qPrintable(error));
+        host.setSyntheticCapturePending(true);
+        RemoteClient client;QSignalSpy errors(&client,&RemoteClient::error);
+        QSignalSpy frames(&client,&RemoteClient::imageFrame);
+        bool waiting=false;int samples=0;QString reason;
+        connect(&client,&RemoteClient::streamMetrics,this,[&](const QJsonObject &metrics){waiting=metrics.value("captureWaiting").toBool();reason=metrics.value("captureReason").toString();++samples;});
+        client.connectTo("127.0.0.1",host.port(),host.code(),"desktop-recovery",host.fingerprint());
+        QTRY_VERIFY_WITH_TIMEOUT(client.active(),5000);
+        QTRY_VERIFY_WITH_TIMEOUT(waiting,3000);
+        QCOMPARE(reason,QString("test: desktop temporarily unavailable"));
+        // Longer than the card's 15-second no-image threshold: the transport
+        // must remain usable while the display/interactive desktop is absent.
+        QTest::qWait(16000);
+        QVERIFY(client.active());QVERIFY(errors.isEmpty());QVERIFY(frames.isEmpty());QVERIFY(samples>=10);
+        QImage restored(640,360,QImage::Format_RGB32);restored.fill(Qt::green);
+        host.setSyntheticFrame(restored);host.setSyntheticCapturePending(false);
+        QTRY_VERIFY_WITH_TIMEOUT(!frames.isEmpty(),4000);
+        QTRY_VERIFY_WITH_TIMEOUT(!waiting,3000);
+        QVERIFY(reason.isEmpty());
+        QVERIFY(client.active());QVERIFY(errors.isEmpty());
+        client.disconnectPeer();host.stop();
+    }
     void fileTransferResumesWithoutOverwriting() {
         QTemporaryDir temporary;QVERIFY(temporary.isValid());
         const auto receive=temporary.path()+"/receive";QVERIFY(QDir().mkpath(receive));

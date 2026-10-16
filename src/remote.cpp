@@ -65,17 +65,18 @@ public:
         if(encodedVideo) desktop.reset(); else { desktop.commit(); if(video) video->reset(); videoSequence=0; }
     }
     void discard(quint64 generation) { if(generation==currentGeneration && video) { video->reset(); videoSequence=0; } }
-    void encode(quint64 generation,QImage image,const StreamSettings &settings,bool nativeCapture,bool incremental,bool office,bool allowVideo,qint64 capturedAt,int targetBitrate) {
+    void encode(quint64 generation,QImage image,const StreamSettings &settings,bool nativeCapture,bool incremental,bool office,bool allowVideo,qint64 capturedAt,int targetBitrate,bool simulatedPending=false) {
         QElapsedTimer timing; timing.start();
         if(generation!=currentGeneration) { desktop.reset(); video.reset();committed={}; pending={};observed={};motionStreak=0;committedSerial=pendingSerial=0;videoActive=false;nativeFailed=false;videoSequence=0;lastChange=capturedAt; currentGeneration=generation; }
         desktop.setOfficeOptimizations(office && settings.quality>30);
         CaptureFrame frame;
         nativeCapturing=nativeCapture;
         if(nativeCapture) frame=Platform::captureFrame(nullptr,QSize(settings.width,settings.height)); else frame.image=image;
+        if(simulatedPending) { frame.image={}; frame.pending=true; frame.waitReason="test: desktop temporarily unavailable"; }
         image=frame.image;
         timing.restart(); // Keep native acquisition time out of encoding metrics.
-        auto finish=[&](const QByteArray &bytes,const QString &error,bool encodedVideo=false) { emit ready(generation,bytes,error,timing.nsecsElapsed()/1000,capturedAt,encodedVideo); };
-        if(frame.pending) { finish({},{});return; }
+        auto finish=[&](const QByteArray &bytes,const QString &error,bool encodedVideo=false) { emit ready(generation,bytes,error,timing.nsecsElapsed()/1000,capturedAt,encodedVideo,frame.pending); };
+        if(frame.pending) { finish({},frame.waitReason);return; }
         if(image.isNull()) { finish({},"屏幕采集失败，请检查系统屏幕录制权限。"); return; }
         if(office && !videoActive && frame.unchanged && frame.serial && frame.serial==committedSerial && !desktop.needsRefinement()) { finish(desktop.repeatReference(),{});return; }
         if(office && videoActive && committed==image) {
@@ -109,7 +110,7 @@ public:
         finish(bytes,{});
     }
 signals:
-    void ready(quint64 generation,const QByteArray &bytes,const QString &error,qint64 encodeUs,qint64 capturedAt,bool video);
+    void ready(quint64 generation,const QByteArray &bytes,const QString &error,qint64 encodeUs,qint64 capturedAt,bool video,bool waiting);
     void backendFallback(quint64 generation,const QString &reason);
 };
 RemoteHost::RemoteHost(QObject *parent) : QObject(parent) {
@@ -125,9 +126,10 @@ RemoteHost::RemoteHost(QObject *parent) : QObject(parent) {
     auto encoder=new CaptureEncoder; m_encoder=encoder; encoder->moveToThread(&m_encoderThread);
     connect(&m_encoderThread,&QThread::finished,encoder,&QObject::deleteLater);
     connect(encoder,&CaptureEncoder::backendFallback,this,[this](quint64 generation,const QString &reason) { if(generation==m_captureGeneration) { ++m_videoFallbacks;emit status(reason); } });
-    connect(encoder,&CaptureEncoder::ready,this,[this,encoder](quint64 generation,const QByteArray &bytes,const QString &error,qint64 encodeUs,qint64 capturedAt,bool video) {
+    connect(encoder,&CaptureEncoder::ready,this,[this,encoder](quint64 generation,const QByteArray &bytes,const QString &error,qint64 encodeUs,qint64 capturedAt,bool video,bool waiting) {
         if(generation!=m_captureGeneration) return;
-        m_encoding=false; if(!m_peer || !m_wire) return;
+        m_encoding=false; m_captureWaiting=waiting; m_captureReason=waiting ? error : QString(); if(!m_peer || !m_wire) return;
+        if(waiting) return;
         if(!error.isEmpty()) { m_wire->sendJson({{"type","error"},{"message",error}}); disconnectPeer(); return; }
         if(bytes.isEmpty()) return;
         if(bytes.size()>Wire::MaxFrame) { m_wire->sendJson({{"type","error"},{"message","无损画面过大，请降低分辨率或选择智能增量模式。"}}); disconnectPeer(); return; }
@@ -283,7 +285,7 @@ void RemoteHost::accept(qintptr descriptor) {
             connect(files,&FileTransfer::received,this,&RemoteHost::fileReceived);
             connect(files,&FileTransfer::progress,this,&RemoteHost::fileProgress);
             ++m_captureGeneration; m_encoding=false; m_lastCapture=-10000;
-            m_frameClock.start(); m_pendingFrames.clear(); m_scheduler.reset();m_transportBytes=0;m_frameId=0;m_lastMetrics=0;m_cursorShape.clear();m_lastCursor={}; m_stream=StreamSettings(); m_capture.setInterval(1000/m_stream.fps);
+            m_captureWaiting=false; m_frameClock.start(); m_pendingFrames.clear(); m_scheduler.reset();m_transportBytes=0;m_frameId=0;m_lastMetrics=0;m_cursorShape.clear();m_lastCursor={}; m_stream=StreamSettings(); m_capture.setInterval(1000/m_stream.fps);
             m_videoFrames=0;m_videoFallbacks=0;
             socket->setProperty("desktopDelta",j.value("desktopDelta").toBool());
             m_lastFrameSent=-10000;
@@ -330,11 +332,14 @@ void RemoteHost::capture() {
     const auto now=m_frameClock.elapsed();
     if(now-m_lastMetrics>=1000) {
         auto metrics=streamingMetrics();metrics["socketQueueBytes"]=double(m_peer->bytesToWrite());
+        metrics["captureWaiting"]=m_captureWaiting;
+        if(m_captureWaiting && !m_captureReason.isEmpty()) metrics["captureReason"]=m_captureReason;
         metrics["encoderBusy"]=m_encoding;metrics["captureAgeMs"]=double(now-m_lastCapture);
         if(qEnvironmentVariableIsSet("LINKDESK_STREAM_TRACE")) qInfo().noquote()<<"Host metrics"<<QJsonDocument(metrics).toJson(QJsonDocument::Compact);
         emit streamMetrics(metrics);if(m_peer->property("frameMetrics").toBool()) { auto message=metrics;message["type"]="stream_metrics";m_wire->sendJson(message); }m_lastMetrics=now;
     }
     if(m_encoding || m_peer->bytesToWrite()>256*1024) return;
+    if(m_captureWaiting && now-m_lastCapture<1000) return;
     if(!m_testMode && m_stream.width>480 && m_stream.quality>30 && m_peer->property("cursorChannel").toBool()) {
         auto cursor=Platform::captureCursor(m_geometry);
         if(!cursor.image.isNull() && !m_geometry.isEmpty()) {
@@ -362,7 +367,12 @@ void RemoteHost::capture() {
         p.drawText(image.rect(),Qt::AlignCenter,"LinkDesk · TLS integration test");
         }
     } else {
-        auto screen = QGuiApplication::primaryScreen(); if (!screen) return;
+        auto screen = QGuiApplication::primaryScreen();
+#ifndef Q_OS_WIN
+        if (!screen) return;
+#endif
+        // Windows native capture can recover even before Qt receives the
+        // monitor-added notification following login or display wake.
         m_geometry = Platform::screenGeometry(screen);
     }
     // Keep the selected resolution and quality; congestion drops captures, never pixels.
@@ -371,8 +381,9 @@ void RemoteHost::capture() {
     m_encoding=true; m_lastCapture=m_frameClock.elapsed();
     auto encoder=static_cast<CaptureEncoder *>(m_encoder); const auto generation=m_captureGeneration; const auto settings=m_stream;
     const bool incremental=m_peer->property("desktopDelta").toBool(),office=m_peer->property("officeV2").toBool(),video=m_peer->property("videoH264").toBool();
+    const bool simulatedPending=m_testMode && m_syntheticPending;
     const int bitrate=int(qMin<qint64>(2147483647,m_scheduler.estimatedBitrate()));
-    QMetaObject::invokeMethod(encoder,[encoder,generation,image,settings,nativeCapture,incremental,office,video,now,bitrate]{encoder->encode(generation,image,settings,nativeCapture,incremental,office,video,now,bitrate);},Qt::QueuedConnection);
+    QMetaObject::invokeMethod(encoder,[encoder,generation,image,settings,nativeCapture,incremental,office,video,now,bitrate,simulatedPending]{encoder->encode(generation,image,settings,nativeCapture,incremental,office,video,now,bitrate,simulatedPending);},Qt::QueuedConnection);
 }
 
 RemoteClient::RemoteClient(QObject *parent) : QObject(parent) {

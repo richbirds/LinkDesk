@@ -84,6 +84,7 @@ bool Platform::screenCaptureAvailable(QString *error) {
 }
 QRect Platform::screenGeometry(QScreen *screen) { Q_UNUSED(screen); return primaryRect(); }
 namespace {
+thread_local DWORD captureGdiError=0;
 struct CaptureSurface {
     HDC memory=nullptr;
     HBITMAP bitmap=nullptr;
@@ -110,11 +111,13 @@ struct CaptureSurface {
 };
 }
 QImage Platform::captureScreen(QScreen *screen, const QSize &maximum) {
+    captureGdiError=0;
     Q_UNUSED(screen); const auto r=primaryRect(); if (r.isEmpty()) return {};
     const auto accelerated=captureDesktopDXGI(r,maximum.boundedTo(r.size())); if(!accelerated.isNull()) return accelerated;
     const auto size=r.size().boundedTo(maximum);
     const auto captureSize=r.size().scaled(size,Qt::KeepAspectRatio);
-    HDC desktop=GetDC(nullptr); if (!desktop) return {};
+    SetLastError(ERROR_SUCCESS);
+    HDC desktop=GetDC(nullptr); if (!desktop) {captureGdiError=GetLastError(); return {};}
     // Reuse a directly accessible DIB: avoid creating a device bitmap and then
     // forcing a second GPU-to-CPU readback through GetDIBits on every frame.
     static thread_local CaptureSurface surface;
@@ -128,14 +131,37 @@ QImage Platform::captureScreen(QScreen *screen, const QSize &maximum) {
             image=QImage(static_cast<const uchar *>(surface.pixels),captureSize.width(),captureSize.height(),captureSize.width()*4,QImage::Format_RGB32).copy();
         }
     }
+    if(image.isNull()) { captureGdiError=GetLastError(); surface.reset(); } // Recreate stale GDI objects after a display change.
     ReleaseDC(nullptr,desktop); return image;
 }
 QString Platform::permissionHelp() {
     return "Windows：请保持已登录桌面、电脑唤醒。普通权限不能控制管理员窗口、UAC 安全桌面或登录屏幕。";
 }
 CaptureFrame Platform::captureFrame(QScreen *screen,const QSize &maximum) {
+    // Active authenticated capture requests wake a power-saved display without
+    // synthesizing input or changing Windows lock/login authorization. This is
+    // a one-shot activity signal, so it expires after the session ends.
+    SetThreadExecutionState(ES_SYSTEM_REQUIRED|ES_DISPLAY_REQUIRED);
     auto frame=captureDesktopFrameDXGI(primaryRect(),maximum.boundedTo(primaryRect().size()));
     if(frame.image.isNull()) frame.image=captureScreen(screen,maximum);
+    // Login/display changes can temporarily invalidate both DXGI and GDI.
+    // Keep TLS and heartbeats alive and retry acquisition rather than aborting
+    // the peer on the very first missing frame. Desktop/login access is unchanged.
+    frame.pending=frame.image.isNull();
+    if(frame.pending) {
+        const auto input=OpenInputDesktop(0,FALSE,DESKTOP_READOBJECTS);
+        const auto desktopError=input ? ERROR_SUCCESS : GetLastError();
+        WCHAR name[256]{};DWORD needed=0;
+        const bool named=input && GetUserObjectInformationW(input,UOI_NAME,name,sizeof(name),&needed);
+        if(input) CloseDesktop(input);
+        if(desktopError==ERROR_ACCESS_DENIED || (named && QString::fromWCharArray(name).compare("Default",Qt::CaseInsensitive)!=0))
+            frame.waitReason="当前输入桌面不可访问或已切换；请在远端处理锁屏、系统或安全软件提示后等待自动恢复";
+        else {
+            if(frame.waitReason.isEmpty()) frame.waitReason="当前桌面采集暂不可用";
+            if(captureGdiError) frame.waitReason+=QString("；GDI 错误 %1").arg(captureGdiError);
+            frame.waitReason+="；正在自动重试";
+        }
+    }
     return frame;
 }
 void Platform::stopCapture() {}

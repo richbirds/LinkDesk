@@ -1,11 +1,13 @@
 #pragma once
 #include <QImage>
+#include <QString>
 #include <QRegion>
 #include <QList>
 #include <QPointF>
 struct DesktopMove { QPoint source; QRect destination; };
 struct CaptureFrame {
     QImage image;
+    QString waitReason;
     QRegion dirty;
     QList<DesktopMove> moves;
     quint64 serial=0, previousSerial=0;

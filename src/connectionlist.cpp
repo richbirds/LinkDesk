@@ -167,6 +167,10 @@ public:
         });
         connect(&client,&RemoteClient::streamMetrics,this,[this](const QJsonObject &metrics){
             if(qEnvironmentVariableIsSet("LINKDESK_STREAM_TRACE")) qInfo().noquote()<<"Viewer metrics"<<QJsonDocument(metrics).toJson(QJsonDocument::Compact);
+            if(metrics.value("captureWaiting").toBool()) {
+                lastFrame=QDateTime::currentMSecsSinceEpoch();
+                setState(1,metrics.value("captureReason").toString("等待远端桌面或显示器就绪，正在自动重试采集")); return;
+            }
             // v0.7.0 hosts suppress unchanged image packets. A live capture loop
             // with no unacknowledged pictures confirms the last image is current.
             if(client.active() && !preview->image.isNull() && metrics.contains("pendingFrames") && metrics.value("pendingFrames").toInt(-1)==0) {

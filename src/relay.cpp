@@ -101,6 +101,7 @@ void RelayTunnel::close() {
 }
 void RelayTunnel::finish(bool remoteEnded) {
     if (m_closed) return;
+    if (!m_ready && remoteEnded) { fail("等待远端接入时中转连接中断，将自动重试。"); return; }
     if (m_draining || !m_ready || !m_local) { close(); return; }
     // Preserve final TLS records (including password rejection) before closing the other leg.
     if (remoteEnded) pumpToLocal(); else pumpToRemote();
@@ -115,7 +116,7 @@ void RelayTunnel::attach(QTcpSocket *socket) {
     connect(socket,&QTcpSocket::connected,this,[this] { pumpToLocal(); pumpToRemote(); });
     connect(socket,&QTcpSocket::disconnected,this,[this] { finish(false); });
     connect(socket,&QTcpSocket::errorOccurred,this,[this](QAbstractSocket::SocketError e) {
-        if (e!=QAbstractSocket::RemoteHostClosedError) close();
+        if (e!=QAbstractSocket::RemoteHostClosedError) fail("本机共享通道连接失败："+m_local->errorString());
     });
     if (socket->state()==QAbstractSocket::ConnectedState) { m_deadline.stop(); pumpToLocal(); pumpToRemote(); }
 }

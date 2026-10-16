@@ -1,5 +1,21 @@
 # Versions and publishing
 
+## v0.9.3
+
+Windows DXGI initialization enumerates adapters and creates its D3D device on the adapter owning the selected desktop output, instead of assuming the default GPU. Recoverable capture telemetry includes the DXGI failure or GDI error and reports inaccessible/switched input desktops separately. No desktop switching, privilege elevation or security-software changes are performed. Capture recovery regression also verifies failure reasons are delivered and cleared after acquisition resumes.
+
+## v0.9.2
+
+Windows capture now treats temporary DXGI/GDI unavailability during login or display wake as recoverable: keep authenticated TLS, heartbeats and file transport alive, retry capture at one-second intervals, and report the waiting state in the connection list. Active capture signals system/display activity without injecting input. Failed GDI surfaces are recreated. Windows startup retries desired sharing every five seconds until ready; explicit sharing opt-out and confirmed exit cancel retries. Relay handshake and local-loopback failures retain a specific diagnostic message.
+
+Regression holds acquisition unavailable for more than 15 seconds, verifies the same authenticated session and telemetry remain alive, then restores a synthetic desktop and verifies frames resume. This does not implement a Windows system service, login-screen control or a virtual display driver; per-user startup still requires login.
+
+## v0.9.1
+
+Fresh profiles default to encrypted password saving, sharing and mouse/keyboard control. Existing explicit false settings remain authoritative. Control and per-device password-saving choices now persist; startup does not overwrite sharing choices. OS screen-recording and accessibility authorization remain required. Preview runs do not load or save the host password or enable sharing.
+
+The application icon has a transparent background and larger monitor artwork. Dedicated tray marks use the available small canvas and omit the fine connecting-link detail; macOS uses a template mask for menu-bar contrast, Windows uses transparent sage/apricot colors.
+
 ## v0.9.0
 
 Closing the main window now keeps connections running in the macOS menu-bar tray or Windows notification area. Tray Show restores the previous page, window state and owned windows. Tray Exit, the sidebar Complete Exit button and application quit requests use the same default-cancel confirmation. A second launch restores a hidden instance.
