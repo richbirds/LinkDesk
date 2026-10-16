@@ -9,6 +9,7 @@ Wire::Wire(QSslSocket *socket, QObject *parent) : QObject(parent), m_socket(sock
             feed(m_socket->read(64 * 1024));
     });
 }
+Wire::Wire(std::function<bool(Type,const QByteArray &)> sender,QObject *parent) : QObject(parent),m_sender(std::move(sender)) {}
 QByteArray Wire::packet(Type type, const QByteArray &payload) {
     QByteArray result(5, '\0');
     result[0] = char(type);
@@ -17,7 +18,12 @@ QByteArray Wire::packet(Type type, const QByteArray &payload) {
     return result;
 }
 bool Wire::send(Type type, const QByteArray &payload) {
-    if (!m_socket || !m_socket->isEncrypted() || payload.isEmpty()) return false;
+    if(payload.isEmpty()) return false;
+    if(m_sender) {
+        if(payload.size()>(type==Json ? MaxJson : type==File ? 32840 : MaxFrame)) return false;
+        return m_sender(type,payload);
+    }
+    if (!m_socket || !m_socket->isEncrypted()) return false;
     if (payload.size() > (type == Json ? MaxJson : type == File ? 32840 : MaxFrame)) return false;
     // Drop old captures when the connection is slow instead of accumulating frames.
     if (type != Json && m_socket->bytesToWrite() > 256 * 1024) return false;

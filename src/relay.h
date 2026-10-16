@@ -96,3 +96,20 @@ private:
     void lost();
     QJsonObject credentials(const QString &type) const;
 };
+
+// One-time machine-identity promotion. The caller journals both tokens in an
+// ACL-protected machine directory before starting this idempotent exchange.
+class CredentialMigration : public QObject {
+    Q_OBJECT
+public:
+    explicit CredentialMigration(QObject *parent=nullptr);
+    void start(const RelayConfig &,const QString &id,const QString &oldToken,const QString &newToken);
+    void stop();
+signals:
+    void completed();
+    void pending();
+private:
+    RelayConfig m_config;QString m_id,m_old,m_next;
+    QPointer<QSslSocket> m_socket;QTimer m_retry,m_timeout;bool m_enabled=false;
+    void dial();void failed();
+};

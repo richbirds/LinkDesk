@@ -1,5 +1,15 @@
 # Versions and publishing
 
+## v0.10.0
+
+Optional Windows SCM unattended host with a stable machine identity and authenticated TLS registration across login, lock, logout and reboot. A separate administrator setup installs protected service binaries and sealed machine policy; original user device IDs can be promoted by the relay's atomic credential rotation. Ordinary user DPAPI files and Windows sign-in credentials are not copied to the service.
+
+The Session 0 host supervises fixed capture/input workers in the selected interactive session. Desktop transitions clear capture/encoder/viewer state, restart desktop-bound resources and send an independent first frame. Bounded, generation-checked worker messages prevent replaced processes from updating a new session. Release acknowledgments preserve outstanding key/button releases across crashes and reconnects. Input uses a dedicated desktop-bound, per-monitor-DPI-aware thread.
+
+The ordinary GUI manages only a narrow authenticated local IPC protocol. Files run through a medium-integrity user broker; files, power and Windows SAS each require separate administrator policy. System SendSAS is invoked by the service for the active console, never simulated with SendInput. The software does not change Windows SAS policy. Service stop/uninstall closes worker jobs and retains protected machine identity for reinstall. Existing ordinary Mac/Windows hosting remains available when the machine service is not installed.
+
+Automated and console-VM validation cover remote authentication rejection, private ACL/local IPC rejection, worker recovery, key release, secure-desktop transitions, user-broker file resume and clean shutdown. RDP-specific session behavior and physical headless/display-hardware behavior require their own environment-specific validation. BitLocker preboot and firmware remain outside scope.
+
 ## v0.9.3
 
 Windows DXGI initialization enumerates adapters and creates its D3D device on the adapter owning the selected desktop output, instead of assuming the default GPU. Recoverable capture telemetry includes the DXGI failure or GDI error and reports inaccessible/switched input desktops separately. No desktop switching, privilege elevation or security-software changes are performed. Capture recovery regression also verifies failure reasons are delivered and cleared after acquisition resumes.

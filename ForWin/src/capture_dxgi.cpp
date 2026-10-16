@@ -57,6 +57,7 @@ class DesktopCapture {
     }
 public:
     ~DesktopCapture() { reset(); }
+    void clear() { reset();retryAfter=0;geometry={};metadata={};serial=0;lastFailure.clear(); }
     QImage frame(const QRect &wanted,const QSize &maximum) {
         metadata={}; metadata.previousSerial=serial;
         const auto now=QDateTime::currentMSecsSinceEpoch();
@@ -114,11 +115,13 @@ public:
     }
     CaptureFrame capture(const QRect &geometry,const QSize &maximum) { const auto image=frame(geometry,maximum); auto result=metadata; result.image=image; if(image.isNull()) result.waitReason=lastFailure; return result; }
 };
+DesktopCapture &captureState() {static thread_local DesktopCapture capture;return capture;}
 }
+void resetDesktopCaptureDXGI() {captureState().clear();}
 QImage captureDesktopDXGI(const QRect &geometry,const QSize &maximum) {
     return captureDesktopFrameDXGI(geometry,maximum).image;
 }
 CaptureFrame captureDesktopFrameDXGI(const QRect &geometry,const QSize &maximum) {
     if(qEnvironmentVariableIsSet("LINKDESK_DISABLE_DXGI")) return {};
-    static thread_local DesktopCapture capture; return capture.capture(geometry,maximum);
+    return captureState().capture(geometry,maximum);
 }

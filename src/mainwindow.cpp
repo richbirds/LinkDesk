@@ -3,6 +3,13 @@
 #include "systemsettings.h"
 #include "exitdeadline.h"
 #include "trayicon.h"
+#ifdef Q_OS_WIN
+#include "gui.h"
+#include "pipe.h"
+#include <QtConcurrent>
+#include <QFutureWatcher>
+#include <QCryptographicHash>
+#endif
 #include <QSystemTrayIcon>
 #include <QMenu>
 #include <QSettings>
@@ -68,6 +75,9 @@ static RelayConfig readConfig() {
     return parseConfig(QJsonDocument::fromJson(file.readAll()).object());
 }
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_relay(this) {
+#ifdef Q_OS_WIN
+    m_serviceManaged=!qApp->property("linkdesk.previewMode").toBool() && !QStandardPaths::isTestModeEnabled() && HostService::installed();
+#endif
     QString startupStorageError;
     connect(&m_host,&RemoteHost::fileReceived,this,[this](const QString &path){
         auto prompt=new QMessageBox(QMessageBox::Information,"文件接收完成",QFileInfo(path).fileName()+" 已保存。是否打开所在文件夹？",QMessageBox::Yes|QMessageBox::No,this);
@@ -161,8 +171,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_rel
     m_address->setTextInteractionFlags(Qt::TextSelectableByMouse); local->addWidget(m_address);
     auto copy=new QPushButton("复制设备 ID"); copy->setMaximumWidth(140); local->addWidget(copy);
     connect(copy,&QPushButton::clicked,this,[this] {
-        if (m_relay.deviceId().isEmpty()) return;
-        QApplication::clipboard()->setText(m_relay.deviceId()); message("本机设备 ID 已复制");
+        QString id=m_relay.deviceId();
+#ifdef Q_OS_WIN
+        if(m_serviceManaged)id=m_machineId;
+#endif
+        if(id.isEmpty())return;
+        QApplication::clipboard()->setText(id); message("本机设备 ID 已复制");
     });
     local->addWidget(label("连接密码","muted")); auto pinrow=new QHBoxLayout;
     m_code=label(m_host.code(),"bigCode"); m_code->setMinimumHeight(48); m_code->setWordWrap(true);
@@ -179,7 +193,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_rel
     m_saveHostPassword=new QCheckBox("保存本机连接密码（下次启动继续使用）"); local->addWidget(m_saveHostPassword);
     m_saveHostPassword->setObjectName("saveHostPassword");
     m_saveHostPassword->setChecked(QSettings().value("saveHostPassword",true).toBool());
-    if(m_saveHostPassword->isChecked() && !qApp->property("linkdesk.previewMode").toBool()) {
+    if(m_saveHostPassword->isChecked() && !qApp->property("linkdesk.previewMode").toBool()
+#ifdef Q_OS_WIN
+       && !m_serviceManaged
+#endif
+    ) {
         const auto saved=Platform::loadPassword("host-password");QString error;
         if(!saved.isEmpty() && m_host.setCode(saved,&error)) m_code->setText(m_host.code());
         else if(!Platform::savePassword("host-password",m_host.code())) {
@@ -257,7 +275,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_rel
     auto sessionRow=new QHBoxLayout; auto sessionText=new QVBoxLayout;
     sessionText->addWidget(label("共享会话","section")); m_peer=label("暂无设备连接","muted"); sessionText->addWidget(m_peer); sessionRow->addLayout(sessionText,1);
     m_disconnectHost=new QPushButton("结束共享会话"); m_disconnectHost->setObjectName("danger"); m_disconnectHost->setEnabled(false); sessionRow->addWidget(m_disconnectHost); session->addLayout(sessionRow);
-    connect(m_disconnectHost,&QPushButton::clicked,this,[this] { m_host.disconnectPeer(); m_relay.endHosting(); });
+    connect(m_disconnectHost,&QPushButton::clicked,this,[this] {
+#ifdef Q_OS_WIN
+        if(m_serviceManaged){QJsonObject reply;QString error;if(!HostService::controlCall("disconnect",&reply,&error))message(error,true);return;}
+#endif
+        m_host.disconnectPeer();m_relay.endHosting();
+    });
     m_fingerprint=label("开启共享后，将设备 ID 和临时密码提供给对方。","muted"); m_fingerprint->setTextInteractionFlags(Qt::TextSelectableByMouse); session->addWidget(m_fingerprint); body->addWidget(sessionCard);
     m_banner=label("准备就绪。配置服务器后，即可跨网络连接。"); m_banner->setObjectName("banner"); body->addWidget(m_banner);
     connect(&m_host,&RemoteHost::status,this,[this](const QString &s) { m_hostStatus->setText("●  "+s); });
@@ -271,6 +294,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_rel
     });
     connect(&m_relay,&RelayAgent::incomingViewer,this,[this](const QString &id) { m_hostViewer=id; });
     connect(&m_relay,&RelayAgent::onlineChanged,this,[this](bool online,const QString &id) {
+#ifdef Q_OS_WIN
+        if(m_serviceManaged){pollMachineService();return;}
+#endif
         m_address->setText(id.isEmpty() ? "尚未注册" : id.left(3)+" "+id.mid(3,3)+" "+id.right(3));
         m_networkState->setText(online ? "●  服务器在线" : "●  服务器未连接");
         m_networkState->setStyleSheet(online ? "color:#31856b;background:#ebf7ef;border-radius:16px;padding:8px 16px;" : "color:#a46519;background:#fff4dd;border-radius:16px;padding:8px 16px;");
@@ -281,6 +307,16 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent),m_host(this),m_rel
     connect(&m_relay,&RelayAgent::error,this,[this](const QString &s) { message(s,true); });
     m_target->setText(QSettings().value("lastDeviceId").toString());
     if(!startupStorageError.isEmpty()) message(startupStorageError,true);
+#ifdef Q_OS_WIN
+    if(!qApp->property("linkdesk.previewMode").toBool() && !QStandardPaths::isTestModeEnabled()) {
+        m_serviceWatch.setInterval(2000);connect(&m_serviceWatch,&QTimer::timeout,this,&MainWindow::pollMachineService);m_serviceWatch.start();
+        if(m_serviceManaged) {
+            m_code->setText("由管理员配置");m_saveHostPassword->setEnabled(false);m_control->setEnabled(false);
+            for(auto button:m_code->parentWidget()->findChildren<QPushButton *>())
+                if(button->text()=="自定义"||button->text()=="刷新")button->setEnabled(false);
+        }
+    }
+#endif
     if(!qApp->property("linkdesk.previewMode").toBool())
         QTimer::singleShot(0,this,&MainWindow::startConfiguredServer);
 }
@@ -288,6 +324,12 @@ void MainWindow::message(const QString &text,bool error) {
     m_banner->setText(text); m_banner->setStyleSheet(error ? "background:#fff1ee;color:#ad4944;border-color:#f5d5d0;" : "");
 }
 void MainWindow::toggleShare() {
+#ifdef Q_OS_WIN
+    if(m_serviceManaged){QJsonObject result;QString error;
+        const auto action=m_share->text()=="暂停机器共享"?"pause":"resume";
+        if(!HostService::controlCall(action,&result,&error))message(error,true);pollMachineService();return;
+    }
+#endif
     if (m_host.isListening()) {
         m_shareRetry.stop(); m_relay.setAvailable(0); m_host.stop(); QSettings().setValue("shareEnabled",false);
         m_share->setText("开启共享"); m_hostStatus->setText("●  共享未开启"); message("屏幕共享已关闭。"); return;
@@ -314,7 +356,11 @@ void MainWindow::connectRemote() {
     const auto target=m_target->text().remove(' ');
     if (!QRegularExpression("^[0-9]{9}$").match(target).hasMatch()) { message("请输入对方的九位设备 ID。",true); return; }
     if (m_password->text().size()<8 || m_password->text().size()>64) { message("请输入对方的连接密码（8–64 个字符）。",true); return; }
-    if (target==m_relay.deviceId()) { message("请使用另一台电脑 的设备 ID。",true); return; }
+    if (target==m_relay.deviceId()
+#ifdef Q_OS_WIN
+        || target==m_machineId
+#endif
+    ) { message("请使用另一台电脑 的设备 ID。",true); return; }
     QSettings().setValue("lastDeviceId",target); m_connect->setEnabled(false);
     m_connect->setText("正在连接…"); message("正在建立端到端加密连接…");
     m_connectingTarget=target;
@@ -359,7 +405,11 @@ void MainWindow::restoreFromTray() {
 void MainWindow::requestExit() {
     if(m_exiting || m_confirmingExit) return;
     m_confirmingExit=true;
-    QMessageBox confirm(QMessageBox::Question,"完全退出 LinkDesk","退出将结束所有远程连接、共享和文件传输。确定完全退出？",QMessageBox::Yes|QMessageBox::No,this);
+    QString exitText="退出将结束所有远程连接、共享和文件传输。确定完全退出？";
+#ifdef Q_OS_WIN
+    if(m_serviceManaged)exitText="退出将结束查看端的连接和文件传输。机器服务会继续运行；停止机器共享请点击暂停共享，卸载服务请进入软件设置。确定退出查看端？";
+#endif
+    QMessageBox confirm(QMessageBox::Question,"完全退出 LinkDesk",exitText,QMessageBox::Yes|QMessageBox::No,this);
     confirm.setObjectName("exitConfirmation");confirm.setDefaultButton(QMessageBox::No);
     confirm.button(QMessageBox::Yes)->setText("完全退出");confirm.button(QMessageBox::No)->setText("取消");
     const bool accepted=confirm.exec()==QMessageBox::Yes;m_confirmingExit=false;
@@ -382,6 +432,9 @@ void MainWindow::closeEvent(QCloseEvent *event) {
     event->ignore();hideToTray();
 }
 void MainWindow::restoreSharing() {
+#ifdef Q_OS_WIN
+    if(m_serviceManaged)return;
+#endif
     if(m_exiting || !QSettings().value("shareEnabled",true).toBool() || !m_relay.config().valid()) { m_shareRetry.stop(); return; }
     QString error;
     if(startSharing(&error)) { m_shareRetry.stop(); return; }
@@ -391,7 +444,19 @@ void MainWindow::restoreSharing() {
 #endif
 }
 void MainWindow::startConfiguredServer() {
+#ifdef Q_OS_WIN
+    if(m_serviceManaged){QSettings().setValue("service/everManaged",true);auto config=readConfig();if(config.valid()){
+        const auto digest=QCryptographicHash::hash((config.host.toLower()+":"+QString::number(config.port)).toUtf8(),QCryptographicHash::Sha256).toHex().left(16);
+        m_relay.start(config,QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)+"/viewer-devices/"+QString::fromLatin1(digest)+".json");
+    }pollMachineService();return;}
+#endif
     auto config=readConfig(); if (!config.valid()) return;
+#ifdef Q_OS_WIN
+    if(QSettings().value("service/everManaged",false).toBool()){
+        const auto digest=QCryptographicHash::hash((config.host.toLower()+":"+QString::number(config.port)).toUtf8(),QCryptographicHash::Sha256).toHex().left(16);
+        m_relay.start(config,QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)+"/viewer-devices/"+QString::fromLatin1(digest)+".json");
+    }else
+#endif
     m_relay.start(config);
     connect(&m_shareRetry,&QTimer::timeout,this,&MainWindow::restoreSharing,Qt::UniqueConnection);
     restoreSharing();
@@ -402,8 +467,21 @@ void MainWindow::configureServer() {
     auto network=new QWidget; auto networkLayout=new QVBoxLayout(network);
     auto forceRelay=new QCheckBox("强制走中转服务器（关闭局域网直连）"); forceRelay->setChecked(QSettings().value("network/forceRelay",false).toBool());
     networkLayout->addWidget(forceRelay); networkLayout->addWidget(label("应用于远程连接和连接列表中的全部电脑。保存后现有连接将重新建立。","muted")); networkLayout->addStretch(); tabs->addTab(network,"连接选项");
+#ifdef Q_OS_WIN
+    auto servicePage=new QWidget;auto serviceLayout=new QVBoxLayout(servicePage);
+    auto serviceInfo=new QLabel("机器服务由 Windows SCM 开机启动，登录前也可保持设备在线。\n配置无人值守、机器密码及文件/电源/SAS 权限需要 Windows 管理员授权。\n普通查看端保持当前用户权限；关闭界面不会停止机器服务。");serviceInfo->setWordWrap(true);serviceLayout->addWidget(serviceInfo);
+    auto serviceManage=new QPushButton(HostService::installed()?"管理员配置机器服务":"安装并配置无人值守服务（管理员）");serviceLayout->addWidget(serviceManage);
+    connect(serviceManage,&QPushButton::clicked,&dialog,[this]{configureMachineService();});
+    auto serviceRemove=new QPushButton("卸载机器服务（管理员）");serviceRemove->setEnabled(HostService::installed());serviceLayout->addWidget(serviceRemove);
+    connect(serviceRemove,&QPushButton::clicked,&dialog,[&]{if(QMessageBox::question(&dialog,"卸载机器服务","停止机器远控并卸载 Windows 服务？机器私有配置将保留。",QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes)return;QString error;if(!HostService::launchRemoval(&error))QMessageBox::warning(&dialog,"无法卸载",error);});
+    serviceLayout->addStretch();tabs->addTab(servicePage,"无人值守服务");
+#endif
     auto general=new QWidget;auto generalLayout=new QFormLayout(general);tabs->insertTab(0,general,"常规");tabs->setCurrentWidget(general);
-    auto autoStart=new QCheckBox("登录系统后自动启动 LinkDesk");autoStart->setChecked(SystemSettings::autoStartEnabled());generalLayout->addRow(autoStart);
+    auto autoStart=new QCheckBox("登录系统后自动启动 LinkDesk");
+#ifdef Q_OS_WIN
+    if(m_serviceManaged)autoStart->setText("登录后自动打开查看端（机器服务由 Windows 开机启动）");
+#endif
+    autoStart->setChecked(SystemSettings::autoStartEnabled());generalLayout->addRow(autoStart);
     auto receiveFolder=new QLineEdit(FileTransfer::receiveDirectory());auto chooseFolder=new QPushButton("选择…");auto folderRow=new QHBoxLayout;folderRow->addWidget(receiveFolder);folderRow->addWidget(chooseFolder);generalLayout->addRow("接收文件保存到",folderRow);
     generalLayout->addRow(label("默认为系统下载目录。将文件拖到已连接的缩略图即可发送；中断后重新连接会自动续传。","muted"));
     connect(chooseFolder,&QPushButton::clicked,&dialog,[&]{auto path=QFileDialog::getExistingDirectory(&dialog,"接收目录",receiveFolder->text());if(!path.isEmpty()) receiveFolder->setText(path);});
@@ -476,9 +554,18 @@ void MainWindow::configureServer() {
         }
         const bool networkChanged=QSettings().value("network/forceRelay",false).toBool()!=forceRelay->isChecked();
         QSettings().setValue("network/forceRelay",forceRelay->isChecked());
-        if((changed || networkChanged) && chosen.valid()) m_relay.start(chosen);
+        if((changed || networkChanged) && chosen.valid()) {
+#ifdef Q_OS_WIN
+            if(m_serviceManaged)QTimer::singleShot(0,this,&MainWindow::startConfiguredServer);else
+#endif
+            m_relay.start(chosen);
+        }
         dialog.accept();
-        if(chosen.valid() && QSettings().value("shareEnabled",true).toBool() && !m_host.isListening())
+        if(chosen.valid() && QSettings().value("shareEnabled",true).toBool() && !m_host.isListening()
+#ifdef Q_OS_WIN
+            && !m_serviceManaged
+#endif
+        )
             QTimer::singleShot(0,this,[this]{QString error;if(!startSharing(&error))message(error,true);});
     });
     dialog.exec();
@@ -488,3 +575,57 @@ QString MainWindow::passwordAccount(const QString &target) const {
     auto config=m_relay.config(); if (config.host.isEmpty()) config=readConfig();
     return "remote:"+config.host.toLower()+":"+QString::number(config.port)+":"+target;
 }
+
+#ifdef Q_OS_WIN
+void MainWindow::pollMachineService(){
+    if(m_servicePolling || m_exiting)return;
+    const bool installed=HostService::installed();
+    if(installed!=m_serviceManaged){
+        m_serviceManaged=installed;m_shareRetry.stop();m_relay.stop();m_host.stop();
+        m_saveHostPassword->setEnabled(!installed);m_control->setEnabled(!installed);
+        if(!installed){
+            QSignalBlocker a(m_saveHostPassword),b(m_control);m_machineId.clear();
+            m_saveHostPassword->setText("保存本机连接密码（下次启动继续使用）");m_saveHostPassword->setChecked(QSettings().value("saveHostPassword",true).toBool());m_control->setChecked(QSettings().value("controlEnabled",true).toBool());
+            if(m_saveHostPassword->isChecked()){
+                const auto saved=Platform::loadPassword("host-password");QString error;
+                if(saved.isEmpty() || !m_host.setCode(saved,&error)){
+                    if(!Platform::savePassword("host-password",m_host.code())){m_saveHostPassword->setChecked(false);message("普通客户端连接密码未能加密保存。",true);}
+                }
+            }
+            m_code->setText(m_host.code());m_share->setText("开启共享");m_peer->setText("暂无设备连接");m_disconnectHost->setEnabled(false);m_fingerprint->setText("开启共享后，将设备 ID 和连接密码提供给对方。");
+        }
+        for(auto button:m_code->parentWidget()->findChildren<QPushButton *>())if(button->text()=="自定义"||button->text()=="刷新")button->setEnabled(!installed);
+        QTimer::singleShot(0,this,&MainWindow::startConfiguredServer);
+    }
+    if(!m_serviceManaged)return;m_servicePolling=true;
+    auto watcher=new QFutureWatcher<QString>(this);
+    connect(watcher,&QFutureWatcher<QString>::finished,this,[this,watcher]{
+        const auto result=watcher->result();watcher->deleteLater();m_servicePolling=false;
+        if(!m_serviceManaged)return;
+        const auto state=QJsonDocument::fromJson(result.toUtf8()).object();
+        if(state.isEmpty()){m_networkState->setText("●  机器服务未响应");m_hostStatus->setText("请检查 Windows 服务状态或本机 IPC 授权");return;}
+        const auto sequence=quint64(state.value("completedSequence").toDouble());
+        if(sequence>m_serviceFileSequence){m_serviceFileSequence=sequence;const auto path=state.value("completedFile").toString();if(!path.isEmpty()){
+            auto prompt=new QMessageBox(QMessageBox::Information,"文件接收完成",QFileInfo(path).fileName()+" 已保存。是否打开所在文件夹？",QMessageBox::Yes|QMessageBox::No,this);prompt->setTextFormat(Qt::PlainText);prompt->setAttribute(Qt::WA_DeleteOnClose);prompt->setWindowModality(Qt::NonModal);prompt->setDefaultButton(QMessageBox::No);connect(prompt,&QMessageBox::finished,this,[path](int result){if(result==QMessageBox::Yes)QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));});prompt->show();
+        }}
+        m_server->setText(state.value("server").toString()+":"+QString::number(state.value("port").toInt()));
+        m_machineId=state.value("deviceId").toString();auto formatted=m_machineId;if(formatted.size()==9){formatted.insert(6,' ');formatted.insert(3,' ');}m_address->setText(formatted.isEmpty()?"正在注册机器设备…":formatted);
+        {QSignalBlocker a(m_saveHostPassword),b(m_control);m_saveHostPassword->setText("机器连接密码由管理员加密保存");m_saveHostPassword->setChecked(true);m_control->setChecked(state.value("unattended").toBool());}
+        m_disconnectHost->setEnabled(state.value("connected").toBool());m_peer->setText(state.value("connected").toBool()?"机器服务远控会话已连接":"暂无设备连接");
+        const bool sharing=state.value("sharing").toBool();m_share->setText(sharing?"暂停机器共享":"恢复机器共享");m_code->setText("由管理员配置");
+        m_networkState->setText(state.value("online").toBool()?"●  机器服务在线":"●  机器服务连接中");m_hostStatus->setText(state.value("state").toString());m_fingerprint->setText("机器证书 SHA-256\n"+state.value("fingerprint").toString());
+    });watcher->setFuture(QtConcurrent::run([]{return HostService::queryStatus();}));
+}
+void MainWindow::configureMachineService(){
+    QString error;
+    if(HostService::installed()){if(!HostService::launchSetup({}, {},true,&error))message(error,true);return;}
+    const auto relay=readConfig();if(!relay.valid(&error)){message("请先填写有效服务器配置："+error,true);return;}
+    HostService::Config policy;policy.server=relay.host;policy.port=relay.port;policy.pin=relay.fingerprint;policy.enrollment=relay.enrollmentKey;policy.password=m_host.code();policy.operatorSid=HostService::currentSid();policy.sessionMode="active";policy.files=true;
+    QJsonObject migration;const auto root=QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    const auto digest=QCryptographicHash::hash((relay.host.toLower()+":"+QString::number(relay.port)).toUtf8(),QCryptographicHash::Sha256).toHex().left(16);
+    if(!QSettings().value("service/everManaged",false).toBool()){
+        QFile device(root+"/devices/"+QString::fromLatin1(digest)+".json");if(device.open(QIODevice::ReadOnly)&&device.size()<=4096){const auto old=QJsonDocument::fromJson(device.readAll()).object();if(QRegularExpression("^[0-9]{9}$").match(old.value("id").toString()).hasMatch()&&QRegularExpression("^[0-9a-f]{64}$").match(old.value("token").toString()).hasMatch())migration={{"id",old.value("id")},{"token",old.value("token")},{"server",relay.host},{"port",int(relay.port)},{"fingerprint",RelayConfig::normalizePin(relay.fingerprint)}};}
+    }
+    if(!HostService::launchSetup(policy,migration,false,&error))message(error,true);
+}
+#endif

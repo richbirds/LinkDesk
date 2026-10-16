@@ -24,6 +24,14 @@ protected:
 protected:
     void closeEvent(QCloseEvent *) override;
 private:
+#ifdef Q_OS_WIN
+    bool m_serviceManaged=false,m_servicePolling=false;
+    QTimer m_serviceWatch;
+    QString m_machineId;
+    quint64 m_serviceFileSequence=0;
+    void pollMachineService();
+    void configureMachineService();
+#endif
     QSystemTrayIcon *m_tray=nullptr;
     bool m_exiting=false,m_confirmingExit=false,m_inTray=false;
     Qt::WindowStates m_savedState;

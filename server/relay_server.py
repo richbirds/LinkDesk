@@ -125,6 +125,36 @@ class RelayServer:
             except sqlite3.IntegrityError:
                 continue
 
+    def migrate_id(self, message, old_digest):
+        """Rotate a user credential into machine ownership with crash-safe retries."""
+        device_id = message.get("id")
+        if not isinstance(device_id, str) or len(device_id) != 9 or not device_id.isascii() or not device_id.isdigit():
+            raise Rejected("Invalid migration ID")
+        new_digest = token_hash(message.get("newToken"))
+        if hmac.compare_digest(old_digest, new_digest):
+            raise Rejected("Migration requires a new machine credential")
+        row = self.db.execute("SELECT token_hash FROM devices WHERE id = ?", (device_id,)).fetchone()
+        if not row:
+            raise Rejected("Invalid migration credential")
+        if hmac.compare_digest(row[0], new_digest):
+            return device_id
+        if not hmac.compare_digest(row[0], old_digest):
+            raise Rejected("Invalid migration credential")
+        try:
+            self.db.execute("UPDATE devices SET token_hash = ? WHERE id = ? AND token_hash = ?",
+                            (new_digest, device_id, old_digest))
+            self.db.commit()
+        except sqlite3.IntegrityError:
+            self.db.rollback()
+            raise Rejected("Machine credential already in use") from None
+        self.end_for(device_id)
+        previous = self.devices.pop(device_id, None)
+        if previous:
+            previous.writer.close()
+            previous.writer.transport.abort()
+        LOG.info("Device %s credential promoted to machine ownership", device_id)
+        return device_id
+
     def verify_id(self, message, digest):
         device_id = message.get("id")
         if not isinstance(device_id, str):
@@ -192,7 +222,10 @@ class RelayServer:
             message = await read_json(reader, 45)
             digest = self.credential(message)
             action = message.get("type")
-            if action == "register":
+            if action == "migrate":
+                device_id = self.migrate_id(message, digest)
+                await send_json(writer, {"type": "migrated", "id": device_id})
+            elif action == "register":
                 await self.register(reader, writer, message, digest)
             elif action == "connect":
                 await self.connect_session(reader, writer, message, digest)

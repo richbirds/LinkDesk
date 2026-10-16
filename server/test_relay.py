@@ -51,6 +51,32 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response['type'], 'registered')
         return response['id'], token, reader, writer
 
+    async def test_machine_identity_migration_rotates_and_retries(self):
+        device_id, old, _, old_writer = await self.register(True)
+        new = secrets.token_hex(32)
+        async def migrate(token, replacement, key=None):
+            reader, writer = await self.channel()
+            message = self.auth(token, 'migrate', id=device_id, newToken=replacement)
+            if key is not None:
+                message['key'] = key
+            await send_json(writer, message)
+            return await read_json(reader)
+        self.assertEqual((await migrate(secrets.token_hex(32), new))['type'], 'error')
+        self.assertEqual((await migrate(old, new, 'wrong-key'))['type'], 'error')
+        self.assertEqual((await migrate(old, old))['type'], 'error')
+        self.assertEqual((await migrate(old, new)), {'type': 'migrated', 'id': device_id})
+        self.assertNotIn(device_id, self.relay.devices)
+        reader, writer = await self.channel()
+        await send_json(writer, self.auth(old, id=device_id))
+        self.assertEqual((await read_json(reader))['type'], 'error')
+        reader, writer = await self.channel()
+        await send_json(writer, self.auth(new, id=device_id, available=True, fingerprint='b'*64))
+        self.assertEqual((await read_json(reader))['id'], device_id)
+        active = self.relay.devices[device_id]
+        self.assertEqual((await migrate(old, new))['type'], 'migrated')
+        self.assertIs(self.relay.devices[device_id], active)
+        self.assertEqual((await migrate(old, secrets.token_hex(32)))['type'], 'error')
+
     async def test_id_hijack_and_wrong_enrollment_key(self):
         device_id, token, _, _ = await self.register()
         reader, writer = await self.channel()

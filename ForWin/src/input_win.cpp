@@ -12,12 +12,23 @@
 #endif
 #include <windows.h>
 #include "captionbuttons.h"
+namespace {
+thread_local DWORD injectionError=0;
+UINT inject(INPUT &event) {
+    const auto count=SendInput(1,&event,sizeof(event));
+    if(count!=1){const auto error=GetLastError();injectionError=error ? error : ERROR_ACCESS_DENIED;}
+    return count;
+}
+}
+void InputController::clearNativeError(){injectionError=0;}
+unsigned long InputController::nativeError(){return injectionError;}
 
 bool InputController::available(QString *reason) const {
     Q_UNUSED(reason); return true;
 }
 
-void InputController::key(int code, bool down) {
+namespace {
+int virtualKey(int code) {
     int vk = 0;
     if ((code >= Qt::Key_A && code <= Qt::Key_Z) || (code >= Qt::Key_0 && code <= Qt::Key_9)) vk = code;
     else if (code >= Qt::Key_F1 && code <= Qt::Key_F12) vk = VK_F1 + code - Qt::Key_F1;
@@ -33,18 +44,24 @@ void InputController::key(int code, bool down) {
             {Qt::Key_BracketRight,VK_OEM_6},{Qt::Key_Backslash,VK_OEM_5},{Qt::Key_QuoteLeft,VK_OEM_3}};
         vk = keys.value(code);
     }
+    return vk;
+}
+}
+bool InputController::nativeKeySupported(int code){return virtualKey(code)!=0;}
+void InputController::key(int code,bool down) {
+    const int vk=virtualKey(code);
     if (vk) {
         INPUT e{}; e.type = INPUT_KEYBOARD; e.ki.wVk = WORD(vk);
         e.ki.dwFlags = down ? 0 : KEYEVENTF_KEYUP;
         if (vk >= VK_PRIOR && vk <= VK_DELETE) e.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
-        if (SendInput(1,&e,sizeof(e))!=1) qWarning("Windows keyboard injection failed: %lu",GetLastError());
+        if (inject(e)!=1) qWarning("Windows keyboard injection failed: %lu",GetLastError());
     }
 }
 void InputController::button(int code, bool down) {
     DWORD flag = code == 1 ? (down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP)
         : code == 2 ? (down ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP)
         : (down ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_MIDDLEUP);
-    INPUT e{}; e.type = INPUT_MOUSE; e.mi.dwFlags = flag; SendInput(1,&e,sizeof(e));
+    INPUT e{}; e.type = INPUT_MOUSE; e.mi.dwFlags = flag; inject(e);
 }
 
 namespace {
@@ -58,7 +75,7 @@ void absoluteMouse(const QPoint &p,DWORD buttonFlag=0) {
     e.mi.dx=LONG(std::floor((p.x()-left+0.5)*65536.0/width));
     e.mi.dy=LONG(std::floor((p.y()-top+0.5)*65536.0/height));
     e.mi.dwFlags=MOUSEEVENTF_MOVE|MOUSEEVENTF_ABSOLUTE|MOUSEEVENTF_VIRTUALDESK|buttonFlag;
-    if (SendInput(1,&e,sizeof(e))!=1) qWarning("Windows mouse injection failed: %lu",GetLastError());
+    if (inject(e)!=1) qWarning("Windows mouse injection failed: %lu",GetLastError());
 }
 }
 void InputController::movePointer(const QPoint &p) { absoluteMouse(p); }
@@ -98,6 +115,6 @@ void InputController::pointerButton(const QPoint &p,int code,bool down) {
 }
 void InputController::scrollWheel(int ticks) {
         INPUT native{}; native.type = INPUT_MOUSE; native.mi.dwFlags = MOUSEEVENTF_WHEEL;
-        native.mi.mouseData = DWORD(ticks * WHEEL_DELTA); SendInput(1,&native,sizeof(native));
+        native.mi.mouseData = DWORD(ticks * WHEEL_DELTA); inject(native);
 
 }

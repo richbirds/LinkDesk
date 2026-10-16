@@ -8,14 +8,20 @@ $ProjectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 if (-not $BuildDir) { $BuildDir = Join-Path $ProjectRoot 'ForWin/build' }
 $DistRoot = Join-Path $ProjectRoot 'ForWin/dist'
 $Destination = Join-Path $DistRoot 'LinkDesk'
-if (-not (Test-Path "$BuildDir/LinkDesk.exe")) { throw 'Build LinkDesk first.' }
+$Components = @('LinkDesk.exe','LinkDeskService.exe','LinkDeskWorker.exe','LinkDeskServiceSetup.exe')
+foreach ($Component in $Components) {
+    if (-not (Test-Path "$BuildDir/$Component")) { throw "Missing build component: $Component" }
+}
+if (-not (Test-Path "$QtRoot/bin/windeployqt.exe")) { throw 'windeployqt is unavailable.' }
 if (Test-Path $Destination) {
     $Archive = Join-Path $DistRoot "archive/LinkDesk-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
     New-Item -ItemType Directory -Force -Path (Split-Path $Archive) | Out-Null
     Move-Item $Destination $Archive
 }
 New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-Copy-Item "$BuildDir/LinkDesk.exe" $Destination
+foreach ($Component in $Components) {
+    Copy-Item "$BuildDir/$Component" $Destination
+}
 if (Test-Path "$BuildDir/server.json") { Copy-Item "$BuildDir/server.json" $Destination }
 $env:PATH = "$(Join-Path $QtRoot 'bin');$env:PATH"
 if ($CompilerRoot) { $env:PATH = "$(Join-Path $CompilerRoot 'bin');$env:PATH" }

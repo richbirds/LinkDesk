@@ -357,3 +357,33 @@ void RelayAgent::cancelViewer() {
     m_pendingTarget.clear(); m_directActive=false; ++m_lookupGeneration; if (m_probe) { auto probe=m_probe; m_probe.clear(); probe->abort(); probe->deleteLater(); }
     if (m_outgoing) { auto tunnel=m_outgoing; m_outgoing.clear(); tunnel->close(); emit viewerClosed(); }
 }
+
+CredentialMigration::CredentialMigration(QObject *parent):QObject(parent){
+    m_retry.setSingleShot(true);m_timeout.setSingleShot(true);
+    connect(&m_retry,&QTimer::timeout,this,&CredentialMigration::dial);
+    connect(&m_timeout,&QTimer::timeout,this,&CredentialMigration::failed);
+}
+void CredentialMigration::start(const RelayConfig &config,const QString &id,const QString &oldToken,const QString &newToken){
+    stop();const QRegularExpression hex("^[0-9a-f]{64}$"),device("^[0-9]{9}$");
+    if(!config.valid() || config.fingerprint.isEmpty() || !device.match(id).hasMatch() || !hex.match(oldToken).hasMatch() || !hex.match(newToken).hasMatch() || oldToken==newToken){emit pending();return;}
+    m_config=config;m_id=id;m_old=oldToken;m_next=newToken;m_enabled=true;dial();
+}
+void CredentialMigration::stop(){m_enabled=false;m_retry.stop();m_timeout.stop();if(m_socket){auto socket=m_socket;m_socket=nullptr;socket->abort();socket->deleteLater();}m_old.clear();m_next.clear();}
+void CredentialMigration::failed(){
+    if(!m_enabled)return;m_timeout.stop();if(m_socket){auto socket=m_socket;m_socket=nullptr;socket->abort();socket->deleteLater();}
+    if(!m_retry.isActive())m_retry.start(5000);emit pending();
+}
+void CredentialMigration::dial(){
+    if(!m_enabled || m_socket)return;
+    auto socket=new QSslSocket(this);m_socket=socket;auto wire=new Wire(socket,socket);
+    configureSocket(socket,m_config,this,[this,socket](const QString &){if(m_socket==socket)failed();},[this,socket,wire]{
+        if(m_socket==socket)wire->sendJson({{"type","migrate"},{"version",1},{"key",m_config.enrollmentKey},{"id",m_id},{"token",m_old},{"newToken",m_next}});
+    });
+    connect(socket,&QSslSocket::errorOccurred,this,[this,socket](QAbstractSocket::SocketError){if(m_socket==socket)failed();});
+    connect(socket,&QSslSocket::disconnected,this,[this,socket]{if(m_socket==socket)failed();});
+    connect(wire,&Wire::invalidPacket,this,[this,socket](const QString &){if(m_socket==socket)failed();});
+    connect(wire,&Wire::jsonReceived,this,[this,socket](const QJsonObject &j){
+        if(m_socket!=socket)return;
+        if(j.value("type")=="migrated" && j.value("id")==m_id){stop();emit completed();}else failed();
+    });m_timeout.start(15000);socket->connectToHostEncrypted(m_config.host,m_config.port);
+}

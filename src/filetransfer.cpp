@@ -100,7 +100,8 @@ void FileTransfer::message(const QJsonObject &j) {
         if(m_part.size()>size) m_part.resize(0);
         m_part.seek(m_part.size());reply("file_ready",m_part.pos());
     } else if(id==m_id && !id.isEmpty()) {
-        if(type=="file_ready") {
+        if(type=="file_retry") {m_ready=false;m_source.close();}
+        else if(type=="file_ready") {
             bool ok=false;const auto offset=j["offset"].toString().toLongLong(&ok);
             if(!ok || offset<0 || offset>m_size) {fail("接收进度无效");return;}
             if(!m_source.isOpen() && !m_source.open(QIODevice::ReadOnly)) {fail("源文件无法打开");return;}

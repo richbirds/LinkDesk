@@ -100,6 +100,7 @@ void RemoteCanvas::keyPressEvent(QKeyEvent *e) {
         releaseInput(); emit escapeRequested(); return;
     }
     if (!m_control || e->isAutoRepeat()) return;
+    if(e->key()==Qt::Key_Delete && e->modifiers().testFlag(Qt::ControlModifier) && e->modifiers().testFlag(Qt::AltModifier)){releaseInput();emit secureAttentionRequested();e->accept();return;}
     int k=baseKey(e->key()); if (m_keys.contains(k)) return;
     m_keys.insert(k); emit input({{"action","key"},{"key",k},{"down",true}}); e->accept();
 }
@@ -153,6 +154,11 @@ ViewerWindow::ViewerWindow(RemoteClient *client, QWidget *parent) : QMainWindow(
         m_stats->setToolTip(QString("目标 %1 FPS · 分辨率上限 %2×%3 · %4 · 不限带宽")
             .arg(s.fps).arg(s.width).arg(s.height).arg(s.lossless ? "PNG 无损" : QString("JPEG %1").arg(s.quality)));
     });
+    auto sas=new QPushButton("Ctrl+Alt+Del");sas->setObjectName("serviceSasButton");bar->addWidget(sas);
+    connect(sas,&QPushButton::clicked,client,&RemoteClient::requestSecureAttention);
+    connect(client,&RemoteClient::connected,sas,[sas,client]{sas->setEnabled(client->property("serviceSas").toBool());});
+    sas->setEnabled(client->active() && client->property("serviceSas").toBool());
+    connect(client,&RemoteClient::desktopReset,this,[this]{m_canvas->clearFrame();m_canvas->setRemoteCursor({}, {}, {}, false);m_stats->setText("正在切换桌面…");});
     auto fullscreen=new QPushButton("全屏"); bar->addWidget(fullscreen);
     connect(fullscreen,&QPushButton::clicked,this,[this,fullscreen] {
         if (isFullScreen()) { showNormal(); fullscreen->setText("全屏"); }
@@ -162,6 +168,7 @@ ViewerWindow::ViewerWindow(RemoteClient *client, QWidget *parent) : QMainWindow(
     });
     m_leave=new QPushButton("断开连接"); bar->addWidget(m_leave); connect(m_leave,&QPushButton::clicked,this,&QWidget::close);
     connect(m_canvas,&RemoteCanvas::input,client,&RemoteClient::sendInput);
+    connect(m_canvas,&RemoteCanvas::secureAttentionRequested,client,&RemoteClient::requestSecureAttention);
     connect(m_canvas,&RemoteCanvas::escapeRequested,this,[this] { if (isFullScreen()) showNormal(); else close(); });
     connect(m_canvas,&RemoteCanvas::invalidFrame,client,&RemoteClient::disconnectPeer);
     connect(client,&RemoteClient::imageFrame,this,[this](const QImage &image,qint64 bytes,bool changed) {

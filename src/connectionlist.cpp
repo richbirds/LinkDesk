@@ -158,6 +158,7 @@ public:
         connect(&client,&RemoteClient::connected,this,[this](const QString &,bool enabled){
             busy=false; control=enabled; lastFrame=QDateTime::currentMSecsSinceEpoch(); client.setStreamSettings(thumbnailSettings()); setState(0,"已认证，等待画面 · "+endpoint);
         });
+        connect(&client,&RemoteClient::desktopReset,this,[this]{preview->image={};preview->update();setState(1,"正在切换远端桌面，等待独立画面");});
         connect(&client,&RemoteClient::imageFrame,this,[this](const QImage &image,qint64,bool changed){
             if((changed || preview->image.isNull()) && (!expanded || !previewClock.isValid() || previewClock.elapsed()>=1000)) {
                 preview->image=image.scaled(480,270,Qt::KeepAspectRatio,Qt::SmoothTransformation); preview->update(); previewClock.start();

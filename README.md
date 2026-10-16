@@ -4,7 +4,7 @@
 
 C++17 / Qt 6 的 Mac、Windows 远程桌面客户端，以及 Python Ubuntu 注册与中转服务。使用九位设备 ID 和连接密码连接，支持同网段直连及公网中转。
 
-当前版本 **v0.9.3**。
+当前版本 **v0.10.0**。
 
 ## 功能
 
@@ -13,6 +13,8 @@ C++17 / Qt 6 的 Mac、Windows 远程桌面客户端，以及 Python Ubuntu 注�
 - 动态场景可切换硬件 H.264；Windows Media Foundation、Mac VideoToolbox，失败回退 PNG/JPEG。
 - 1–30 FPS 目标帧率，画质/分辨率可选；实际帧率受采集和网络影响。
 - Windows DXGI GPU 采集，失败时回退 GDI；Mac ScreenCaptureKit 采集。
+- Windows 可选无人值守机器服务：开机未登录仍可上线，锁屏、注销和安全桌面切换后恢复画面与输入；需要管理员明确授权。
+- 机器身份与普通用户查看端分离，保留原设备 ID 时由中转安全轮换注册凭据；文件传输仍以已登录普通用户身份运行。
 - 首次使用默认保存本机密码、允许鼠标键盘控制并开启共享；此后保留用户的开关选择。Mac 仍需系统屏幕录制与辅助功能授权。
 - 连接列表、分组、命名、多台缩略图；双击只展开选中的桌面。
 - 完整画面不设固定带宽上限，缩略图采用低带宽设置。
@@ -33,7 +35,7 @@ C++17 / Qt 6 的 Mac、Windows 远程桌面客户端，以及 Python Ubuntu 注�
 3. 被控端开启共享；Mac 需授权屏幕录制。需要控制时勾选「允许鼠标键盘控制」，Mac 还需授权辅助功能。
 4. 主控端输入设备 ID 和连接密码。
 5. 两端升级至 v0.8.0 后，可拖放文件到缩略图；应用重启后重新选择同一未变更文件可续传。接收完成可选择打开文件夹。
-6. 自动启动为当前用户登录后启动。移动安装位置后需重新设置；它不会绕过系统登录或远程控制授权。
+6. 普通客户端自动启动为当前用户登录后启动。Windows 如需登录前或锁屏控制，在「软件设置 → 无人值守服务」由管理员安装并明确授权；Windows 登录密码始终由用户手动输入。见 [机器服务说明](docs/windows-service.md)。
 
 [配置模板](examples/linkdesk-server.example.json) 中仅有占位内容。真实配置、密钥、日志和带配置安装包不包含在仓库中，也不应提交。
 
@@ -51,6 +53,7 @@ ctest --test-dir ForMac/build --output-on-failure
 - [Windows 构建与打包](ForWin/README.md)
 - [版本与同步说明](docs/RELEASES.md)
 - [采集、编码、网络反馈与合成基准](docs/STREAMING.md)
+- [Windows 机器服务、权限及验证流程](docs/windows-service.md)
 - [图标设计与生成说明](assets/icons/README.md)
 
 也可在 Qt Creator 打开根目录或平台目录的 `CMakeLists.txt`。构建没有默认私有服务器，用户需导入自己的配置。

@@ -24,6 +24,7 @@ public:
 signals:
     void input(const QJsonObject &event);
     void escapeRequested();
+    void secureAttentionRequested();
     void invalidFrame();
 protected:
     void paintEvent(QPaintEvent *) override;

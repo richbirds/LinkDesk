@@ -97,6 +97,24 @@ private slots:
         host.stop(); QTRY_VERIFY_WITH_TIMEOUT(!client.active(),(m_publicServer ? 30000 : 5000));
         a.stop(); b.stop();
     }
+    void machineCredentialMigrationPreservesId() {
+        if(m_publicServer)QSKIP("Credential rotation is tested on the disposable local relay only");
+        RelayAgent original;const auto legacy=m_dir.filePath("migration-user.json");original.start(m_config,legacy);
+        QTRY_VERIFY_WITH_TIMEOUT(original.online(),10000);const auto id=original.deviceId();
+        QFile file(legacy);QVERIFY(file.open(QIODevice::ReadOnly));const auto previous=QJsonDocument::fromJson(file.readAll()).object();file.close();
+        const auto old=previous.value("token").toString(),next=QString(64,'d');
+        CredentialMigration migration;QSignalSpy completed(&migration,&CredentialMigration::completed);
+        original.stop();migration.start(m_config,id,old,next);QTRY_COMPARE_WITH_TIMEOUT(completed.size(),1,10000);
+        const auto machine=m_dir.filePath("migration-machine.json");QFile out(machine);QVERIFY(out.open(QIODevice::WriteOnly));out.write(QJsonDocument(QJsonObject{{"id",id},{"token",next}}).toJson());out.close();
+        RelayAgent promoted;promoted.start(m_config,machine);QTRY_VERIFY_WITH_TIMEOUT(promoted.online(),10000);QCOMPARE(promoted.deviceId(),id);
+        migration.start(m_config,id,old,next);QTRY_COMPARE_WITH_TIMEOUT(completed.size(),2,10000);QVERIFY(promoted.online());
+        RelayAgent revoked;QSignalSpy rejected(&revoked,&RelayAgent::error);revoked.start(m_config,legacy);QTRY_VERIFY_WITH_TIMEOUT(!rejected.isEmpty(),10000);QVERIFY(!revoked.online());
+        revoked.stop();promoted.stop();
+        // This credential-lifecycle test consumes extra TCP handshakes. Reset
+        // only the disposable relay's per-IP budget before subsequent cases;
+        // production connection limits remain exercised without modification.
+        m_server.terminate();if(!m_server.waitForFinished(2000)){m_server.kill();QVERIFY(m_server.waitForFinished(5000));}startServer();
+    }
     void sameLanUsesDirectTls() {
         RemoteHost host; QString error; QVERIFY(host.start(0,&error,true,QHostAddress::Any));
         QHostAddress local;

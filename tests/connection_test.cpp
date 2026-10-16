@@ -10,6 +10,22 @@
 #include <QTemporaryDir>
 #include <QSettings>
 #include <QDir>
+class FakeHostBackend final : public HostBackend {
+public:
+    QImage image=QImage(640,360,QImage::Format_RGB32);bool waiting=false,activated=false;int inputs=0;
+    FakeHostBackend(){image.fill(Qt::red);}
+    CaptureFrame sample(const QSize &) override {CaptureFrame f;f.pending=waiting;f.waitReason=waiting?"test: session switch":QString();if(!waiting)f.image=image;return f;}
+    QRect geometry() const override{return QRect(0,0,640,360);}
+    void activate(bool value) override{activated=value;}
+    void input(const QJsonObject &) override{++inputs;}
+    void releaseInput() override{}
+    void fileJson(const QJsonObject &) override{}
+    void fileData(const QByteArray &) override{}
+    bool filesAllowed() const override{return false;}
+    bool power(const QString &,QString *error) override{*error="power denied";return false;}
+    bool sasAvailable() const override{return false;}
+    bool sas(QString *error) override{*error="sas denied";return false;}
+};
 class ConnectionTest : public QObject {
     Q_OBJECT
 private slots:
@@ -18,6 +34,21 @@ private slots:
         QCoreApplication::setOrganizationName("LinkDeskTests");
         QCoreApplication::setApplicationName("LinkDeskTests");
         QStandardPaths::setTestModeEnabled(true);
+    }
+    void brokeredHostAuthenticationAndDesktopBoundary() {
+        FakeHostBackend backend;RemoteHost host;host.setBackend(&backend);QString error;
+        QVERIFY2(host.start(0,&error,false),qPrintable(error));QVERIFY(host.setControl(true,&error));
+        {RemoteClient rejected;QSignalSpy errors(&rejected,&RemoteClient::error);rejected.connectTo("127.0.0.1",host.port(),"incorrect-password","broker-reject",host.fingerprint());QTRY_VERIFY_WITH_TIMEOUT(!errors.isEmpty(),5000);QVERIFY(!backend.activated);QCOMPARE(backend.inputs,0);}
+        RemoteClient client;QSignalSpy resets(&client,&RemoteClient::desktopReset),errors(&client,&RemoteClient::error);QImage received;
+        connect(&client,&RemoteClient::imageFrame,this,[&](const QImage &image,qint64,bool){received=image;});
+        client.connectTo("127.0.0.1",host.port(),host.code(),"broker-test",host.fingerprint());
+        QTRY_VERIFY_WITH_TIMEOUT(client.active()&&!received.isNull(),5000);QVERIFY(backend.activated);QCOMPARE(received.pixelColor(0,0),QColor(Qt::red));
+        client.sendInput({{"action","move"},{"x",.5},{"y",.5}});QTRY_COMPARE(backend.inputs,1);
+        backend.waiting=true;emit backend.desktopBoundary();QTRY_COMPARE(resets.size(),1);QVERIFY(client.active());
+        QTest::qWait(1200);QVERIFY(client.active());QVERIFY(errors.isEmpty());
+        backend.image.fill(Qt::green);backend.waiting=false;received={};
+        QTRY_VERIFY_WITH_TIMEOUT(!received.isNull(),5000);QCOMPARE(received.pixelColor(0,0),QColor(Qt::green));QVERIFY(errors.isEmpty());
+        client.disconnectPeer();host.stop();
     }
     void transientDesktopUnavailabilityKeepsSessionAndRecovers() {
         RemoteHost host; QString error;

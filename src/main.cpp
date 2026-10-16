@@ -1,6 +1,9 @@
 #include "mainwindow.h"
 #include "platform.h"
 #include "singleinstance.h"
+#ifdef Q_OS_WIN
+#include "native.h"
+#endif
 #include <QApplication>
 #include <QDir>
 #include <QTimer>
@@ -15,10 +18,16 @@ int main(int argc,char **argv) {
     QApplication app(argc,argv);
     app.setStyle("Fusion");
     app.setWindowIcon(QIcon(":/brand/linkdesk.png"));
-    app.setOrganizationName("LinkDesk"); app.setApplicationName("LinkDesk"); app.setApplicationVersion("0.9.3");
+    app.setOrganizationName("LinkDesk"); app.setApplicationName("LinkDesk"); app.setApplicationVersion("0.10.0");
     const auto args=app.arguments();
     const int index=args.indexOf("--screenshot");
     const bool preview=index>=0 && index+1<args.size();
+#ifdef Q_OS_WIN
+    if(!preview && HostService::elevated()) {
+        QMessageBox::critical(nullptr,"请使用普通用户权限","请以普通用户身份启动 LinkDesk。无人值守服务的安装与管理会单独请求管理员授权。");
+        return 5;
+    }
+#endif
     QTemporaryDir previewState;
     if(preview) {
         if(!previewState.isValid()) return 1;

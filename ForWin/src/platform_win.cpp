@@ -85,6 +85,8 @@ bool Platform::screenCaptureAvailable(QString *error) {
 QRect Platform::screenGeometry(QScreen *screen) { Q_UNUSED(screen); return primaryRect(); }
 namespace {
 thread_local DWORD captureGdiError=0;
+struct CursorCache {HCURSOR previous=nullptr;QImage shape;QPoint hotspot;};
+CursorCache &cursorCache(){static thread_local CursorCache cache;return cache;}
 struct CaptureSurface {
     HDC memory=nullptr;
     HBITMAP bitmap=nullptr;
@@ -109,6 +111,7 @@ struct CaptureSurface {
         previous=SelectObject(memory,bitmap); size=requested; SetStretchBltMode(memory,COLORONCOLOR); return true;
     }
 };
+CaptureSurface &captureSurface() {static thread_local CaptureSurface surface;return surface;}
 }
 QImage Platform::captureScreen(QScreen *screen, const QSize &maximum) {
     captureGdiError=0;
@@ -120,7 +123,7 @@ QImage Platform::captureScreen(QScreen *screen, const QSize &maximum) {
     HDC desktop=GetDC(nullptr); if (!desktop) {captureGdiError=GetLastError(); return {};}
     // Reuse a directly accessible DIB: avoid creating a device bitmap and then
     // forcing a second GPU-to-CPU readback through GetDIBits on every frame.
-    static thread_local CaptureSurface surface;
+    auto &surface=captureSurface();
     QImage image;
     if(surface.prepare(desktop,captureSize)) {
         const bool copied=captureSize==r.size()
@@ -164,13 +167,13 @@ CaptureFrame Platform::captureFrame(QScreen *screen,const QSize &maximum) {
     }
     return frame;
 }
-void Platform::stopCapture() {}
+void Platform::stopCapture() { resetDesktopCaptureDXGI();captureSurface().reset();cursorCache()={};captureGdiError=0; }
 CursorFrame Platform::captureCursor(const QRect &geometry) {
     CursorFrame result; CURSORINFO info{sizeof(CURSORINFO)};
     if(!GetCursorInfo(&info) || !(info.flags&CURSOR_SHOWING) || geometry.isEmpty()) return result;
     result.position=QPointF(double(info.ptScreenPos.x-geometry.x())/geometry.width(),double(info.ptScreenPos.y-geometry.y())/geometry.height());
     result.visible=geometry.contains(QPoint(info.ptScreenPos.x,info.ptScreenPos.y));
-    static HCURSOR previous=nullptr; static QImage shape; static QPoint hotspot;
+    auto &cache=cursorCache();auto &previous=cache.previous;auto &shape=cache.shape;auto &hotspot=cache.hotspot;
     if(previous!=info.hCursor) {
         ICONINFO icon{};
         if(GetIconInfo(info.hCursor,&icon)) {

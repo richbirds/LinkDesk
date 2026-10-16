@@ -1,5 +1,6 @@
 #pragma once
 #include "input.h"
+#include "hostbackend.h"
 #include "filetransfer.h"
 #include "desktopcodec.h"
 #include "videocodec.h"
@@ -32,6 +33,8 @@ class RemoteHost : public QObject {
 public:
     explicit RemoteHost(QObject *parent = nullptr);
     ~RemoteHost();
+    void setBackend(HostBackend *backend);
+    void setStorageDirectory(const QString &directory) { if(!isListening()) m_storageDirectory=directory; }
     bool start(quint16 port, QString *error, bool testMode = false, const QHostAddress &bind = QHostAddress::Any);
     void stop();
     void disconnectPeer();
@@ -61,6 +64,9 @@ private:
     QSet<QSslSocket *> m_sockets;
     struct Attempts { int count = 0; qint64 since = 0; };
     QHash<QString, Attempts> m_attempts;
+    QPointer<HostBackend> m_backend;
+    QString m_storageDirectory;
+    void releaseInput();
     QString m_code;
     QTimer m_capture, m_heartbeat;
     InputController m_input;
@@ -97,11 +103,13 @@ public:
     void sendFiles(const QStringList &paths);
     void cancelFiles() { m_files.cancel(); emit fileProgress({},0,0,"已取消发送"); }
     void requestPower(const QString &action);
+    void requestSecureAttention();
     void trustCertificate(bool accepted);
     void setStreamSettings(const StreamSettings &settings);
     StreamSettings streamSettings() const { return m_stream; }
     bool active() const { return m_active; }
 signals:
+    void desktopReset();
     void fileProgress(const QString &name,qint64 done,qint64 total,const QString &state);
     void powerResult(const QString &message);
     void certificateCheck(const QString &endpoint, const QString &sha256);

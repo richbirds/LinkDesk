@@ -7,6 +7,12 @@ public:
     bool available(QString *reason = nullptr) const;
     void apply(const QJsonObject &event, const QRect &screen);
     void releaseAll();
+    void releaseKnown(const QSet<int> &keys,const QSet<int> &buttons) { m_keys.unite(keys);m_buttons.unite(buttons);releaseAll(); }
+#ifdef Q_OS_WIN
+    static bool nativeKeySupported(int code);
+    static void clearNativeError();
+    static unsigned long nativeError();
+#endif
     ~InputController() { releaseAll(); }
 private:
     QSet<int> m_keys;

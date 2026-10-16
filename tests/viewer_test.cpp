@@ -4,6 +4,7 @@
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QTest>
 class ViewerTest : public QObject {
     Q_OBJECT
@@ -20,7 +21,19 @@ class ViewerTest : public QObject {
 private slots:
     void initTestCase() {
         QCoreApplication::setOrganizationName("LinkDeskTests"); QCoreApplication::setApplicationName("LinkDeskViewerTests");
-        QSettings().clear();
+        QSettings().clear();QStandardPaths::setTestModeEnabled(true);
+    }
+    void expandingAuthenticatedThumbnailKeepsSasAndClearsDesktopBoundary() {
+        RemoteHost host;QString error;QVERIFY2(host.start(0,&error,true),qPrintable(error));
+        RemoteClient client;client.connectTo("127.0.0.1",host.port(),host.code(),"viewer-lifecycle",host.fingerprint());
+        QTRY_VERIFY_WITH_TIMEOUT(client.active(),5000);
+        // Expanding a thumbnail creates the viewer after welcome was received.
+        client.setProperty("serviceSas",true);ViewerWindow viewer(&client);viewer.setManaged(true);viewer.begin("test",true);
+        auto sas=viewer.findChild<QPushButton *>("serviceSasButton");QVERIFY(sas);QVERIFY(sas->isEnabled());
+        auto canvas=viewer.findChild<RemoteCanvas *>();QVERIFY(canvas);canvas->setFrame(picture());QVERIFY(canvas->property("encodedFrameSize").toSize().isValid());
+        emit client.desktopReset();QVERIFY(!canvas->property("encodedFrameSize").toSize().isValid());
+        client.setProperty("serviceSas",false);emit client.connected("test",true);QVERIFY(!sas->isEnabled());
+        client.disconnectPeer();host.stop();
     }
     void controlledCursorDoesNotTrailLocalCursor() {
         RemoteCanvas canvas;canvas.resize(640,360);canvas.setFrame(picture());
